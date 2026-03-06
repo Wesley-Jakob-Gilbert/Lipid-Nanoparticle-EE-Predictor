@@ -1,0 +1,8 @@
+artifacts/
+data/
+Dockerfile
+docker-compose.yml
+requirements.txt
+LNP_pred/
+__pycache__/
+*.pyc

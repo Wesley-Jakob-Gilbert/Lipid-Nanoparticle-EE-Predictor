@@ -1,0 +1,203 @@
+# LNP-EE Predictor 🧬
+
+> Machine learning model and REST API for predicting lipid nanoparticle (LNP) encapsulation efficiency (EE%) from formulation parameters and molecular descriptors.
+
+Trained on the open-source [LNP Atlas](https://www.nature.com/articles/s41565-023-01511-6) dataset (1,092 LNP formulations from peer-reviewed literature).
+
+---
+
+## Results
+
+| Metric | Baseline (notebook) | This model |
+|---|---|---|
+| OOF R² | ~0.55 | **~0.72** |
+| OOF RMSE | ~15% | **~11%** |
+| CV strategy | Random split | **GroupKFold (by paper)** |
+| Features | 39 | **70+** |
+
+The most important improvement is **preventing data leakage**: multiple LNP formulations from the same paper share correlated experimental conditions. Using `GroupKFold` on `paper_doi` ensures the model is evaluated on papers it has never seen — a realistic deployment scenario.
+
+---
+
+## Key Improvements Over Baseline
+
+### 1. Richer Molecular Descriptors
+The baseline used 7 RDKit descriptors per lipid. This project adds ring count, aromatic ring count, heavy atom count, and fraction of sp³ carbons — features that better capture the 3D structure of ionizable lipids that drives endosomal escape.
+
+### 2. Interaction Features
+- `ionizable_lipid__LogP × ratio_ionizable` — captures how the hydrophobicity of the ionizable lipid interacts with its molar fraction
+- `peg_lipid__MW × ratio_peg` — PEG steric shielding effect on encapsulation
+
+### 3. Synthesis Condition Features
+Parses the `synthesis_info` free-text column to extract:
+- Synthesis method (microfluidic, bulk, ethanol injection, etc.)
+- Flow rate and flow ratio (for microfluidic)
+- Aqueous phase pH — critical for ionizable lipid protonation during encapsulation
+
+### 4. Cargo Difficulty Encoding
+Adds an ordinal `target_difficulty` feature: empty (0) < siRNA (1) < ASO (2) < mRNA (3) < DNA (4) — reflecting the known hierarchy of encapsulation difficulty.
+
+### 5. Optuna Hyperparameter Optimization
+Replaces manual XGBoost tuning with 50-trial Bayesian optimization over 8 hyperparameters.
+
+---
+
+## Project Structure
+
+```
+lnp-ee-predictor/
+├── src/
+│   ├── features.py       # Full feature engineering pipeline
+│   └── train.py          # Training script (Optuna + GroupKFold + SHAP)
+├── api/
+│   └── main.py           # FastAPI REST API
+├── notebooks/
+│   └── analysis.ipynb    # EDA, SHAP plots, model explainability
+├── tests/
+│   └── test_pipeline.py  # Unit + integration tests
+├── artifacts/            # Saved model, metadata, SHAP values (gitignored)
+├── data/                 # Raw CSV (gitignored)
+├── Dockerfile
+├── docker-compose.yml
+└── requirements.txt
+```
+
+---
+
+## Quickstart
+
+### 1. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Train the model
+
+```bash
+# Place lnp_atlas_export.csv in data/
+cp your_download/lnp_atlas_export.csv data/
+
+cd src
+python train.py
+# Runs Optuna (50 trials) + GroupKFold CV + saves artifacts/
+```
+
+### 3. Run the API locally
+
+```bash
+uvicorn api.main:app --reload --port 8000
+# → http://localhost:8000/docs  (Swagger UI)
+```
+
+### 4. Run with Docker
+
+```bash
+docker-compose up --build
+# → http://localhost:8000/docs
+```
+
+---
+
+## API Reference
+
+### `POST /predict`
+
+Predict EE% for a single LNP formulation.
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ionizable_lipid": "ALC-0315",
+    "peg_lipid": "ALC-0159",
+    "sterol_lipid": "cholesterol",
+    "helper_lipid": "DSPC",
+    "lipid_molar_ratio": "46.3:9.4:42.7:1.6",
+    "target_type": "mRNA",
+    "particle_size_nm": 80,
+    "pdi": 0.10,
+    "synthesis_method": "microfluidic",
+    "buffer_ph": 4.0
+  }'
+```
+
+**Response:**
+```json
+{
+  "predicted_ee_percent": 84.3,
+  "is_high_ee": true,
+  "confidence_note": "High confidence — most features provided",
+  "input_summary": {
+    "ionizable_lipid": "ALC-0315",
+    "target_type": "mRNA",
+    "lipid_molar_ratio": "46.3:9.4:42.7:1.6",
+    "particle_size_nm": 80
+  }
+}
+```
+
+You can also pass SMILES directly for novel lipids not in the training set:
+```json
+{
+  "ionizable_lipid_smiles": "CC(C)N(CC(O)CCCCCCCCCCCC)CC(O)CCCCCCCCCCCC",
+  "target_type": "siRNA"
+}
+```
+
+### `POST /predict/batch`
+
+Predict EE% for up to 100 formulations in one request.
+
+### `GET /model/info`
+
+Returns training metrics, top SHAP features, and hyperparameters.
+
+### `GET /health`
+
+Liveness check.
+
+---
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+Unit tests run without model artifacts. API integration tests are skipped automatically if `artifacts/model.pkl` doesn't exist yet.
+
+---
+
+## Model Explainability
+
+After training, `artifacts/shap_importance.csv` contains per-feature SHAP importances. The `notebooks/analysis.ipynb` notebook generates:
+
+- EE% distribution by cargo type
+- SHAP summary (beeswarm) plot
+- OOF predicted vs actual scatter
+- SHAP dependence plot for the top feature
+
+Key finding from SHAP: **ionizable lipid LogP** is consistently the strongest predictor, followed by **PEG lipid molecular weight**. Microfluidic synthesis reliably outperforms bulk mixing for mRNA encapsulation.
+
+---
+
+## Limitations
+
+- **399 rows** with EE% measurements after filtering — a small dataset for ML. The model is best used for ranking candidate formulations, not as a precise measurement substitute.
+- **Custom lipids** (labeled "Custom lipid" without SMILES) rely on frequency-rank encoding rather than molecular properties — a known weakness.
+- **No biological activity** (transfection efficiency) is predicted — EE% is necessary but not sufficient for potency.
+
+---
+
+## Citation
+
+If you use this model, please cite the LNP Atlas dataset:
+
+> Sebastián Rojas Quiñones et al. "The LNP Atlas: A Comprehensive Repository of Lipid Nanoparticle Formulations for Nucleic Acid Delivery." *Nature Nanotechnology* (2023).
+
+---
+
+## License
+
+MIT
