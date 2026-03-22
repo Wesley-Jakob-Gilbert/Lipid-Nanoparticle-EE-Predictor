@@ -25,6 +25,8 @@ except ImportError:
     print("WARNING: RDKit not available. Molecular features will be NaN.")
 
 
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────

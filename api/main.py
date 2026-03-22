@@ -46,16 +46,22 @@ def _load_artifacts():
     with open(meta_path) as f:
         metadata = json.load(f)
 
-    return model, metadata
+    transformer = None
+    transformer_path = ARTIFACTS_DIR / "transformer.pkl"
+    if transformer_path.exists():
+        with open(transformer_path, "rb") as f:
+            transformer = pickle.load(f)
+
+    return model, metadata, transformer
 
 
 try:
-    MODEL, METADATA = _load_artifacts()
+    MODEL, METADATA, TRANSFORMER = _load_artifacts()
     FEATURE_COLS = METADATA["feature_columns"]
     MODEL_READY = True
 except Exception as e:
     print(f"WARNING: Could not load model — {e}")
-    MODEL, METADATA, FEATURE_COLS = None, {}, []
+    MODEL, METADATA, TRANSFORMER, FEATURE_COLS = None, {}, None, []
     MODEL_READY = False
 
 
@@ -249,7 +255,10 @@ def predict_single(form: LNPFormulation) -> PredictionResponse:
 
     # Align to training feature columns
     X = np.array([row.get(col, 0.0) for col in FEATURE_COLS], dtype=np.float32).reshape(1, -1)
-    pred = float(np.clip(MODEL.predict(X)[0], 0, 100))
+    raw_pred = MODEL.predict(X)
+    if TRANSFORMER is not None:
+        raw_pred = TRANSFORMER.inverse_transform(raw_pred.reshape(-1, 1)).ravel()
+    pred = float(np.clip(raw_pred[0], 0, 100))
 
     n_missing = sum(1 for v in row.values() if v is None or (isinstance(v, float) and np.isnan(v)))
     confidence = (

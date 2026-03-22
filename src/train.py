@@ -22,7 +22,7 @@ import shap
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.model_selection import GroupKFold, cross_val_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import PowerTransformer, StandardScaler
 
 warnings.filterwarnings("ignore")
 
@@ -119,12 +119,23 @@ def train(
     print(f"  EE% distribution: mean={y.mean():.1f}%, std={y.std():.1f}%")
     print(f"  High EE% (>={HIGH_EE_THRESHOLD}%): {(y >= HIGH_EE_THRESHOLD).sum()} / {len(y)}")
 
+    # ── Box-Cox transform on target ──────────────────────────────────────────
+    # Transforms skewed EE% distribution toward Gaussian so the model can learn
+    # the full 10-99% range instead of collapsing to 60-90%.
+    # Box-Cox requires strictly positive values; epsilon guards against y=0.
+    print(f"[{datetime.now():%H:%M:%S}] Fitting Box-Cox transformer on target...")
+    transformer = PowerTransformer(method='box-cox')
+    y_transformed = transformer.fit_transform(
+        (y + 1e-6).reshape(-1, 1)
+    ).ravel().astype(np.float32)
+    print(f"  Lambda: {transformer.lambdas_[0]:.4f}")
+
     # ── Hyperparameter optimization ──────────────────────────────────────────
     if OPTUNA_AVAILABLE and n_optuna_trials > 0:
         print(f"[{datetime.now():%H:%M:%S}] Running Optuna ({n_optuna_trials} trials)...")
         study = optuna.create_study(direction="minimize",
                                     sampler=optuna.samplers.TPESampler(seed=42))
-        study.optimize(make_optuna_objective(X, y, groups),
+        study.optimize(make_optuna_objective(X, y_transformed, groups),
                        n_trials=n_optuna_trials, show_progress_bar=True)
         best_params = study.best_params
         print(f"  Best RMSE (CV): {study.best_value:.2f}%")
@@ -152,13 +163,25 @@ def train(
         X_tr, X_val = X[train_idx], X[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
 
+        # Train on Box-Cox transformed target; evaluate in original EE% space
+        y_tr_t = transformer.transform(
+            (y_tr + 1e-6).reshape(-1, 1)
+        ).ravel().astype(np.float32)
+        y_val_t = transformer.transform(
+            (y_val + 1e-6).reshape(-1, 1)
+        ).ravel().astype(np.float32)
+
         model_fold = xgb.XGBRegressor(**best_params, verbosity=0, early_stopping_rounds=50)
         model_fold.fit(
-            X_tr, y_tr,
-            eval_set=[(X_val, y_val)],
+            X_tr, y_tr_t,
+            eval_set=[(X_val, y_val_t)],
             verbose=False,
         )
-        preds = model_fold.predict(X_val)
+        preds_t = model_fold.predict(X_val)
+        preds = np.clip(
+            transformer.inverse_transform(preds_t.reshape(-1, 1)).ravel(),
+            0, 100,
+        )
         oof_preds[val_idx] = preds
 
         fold_rmse = np.sqrt(mean_squared_error(y_val, preds))
@@ -186,7 +209,7 @@ def train(
     # ── Final model on full data ─────────────────────────────────────────────
     print(f"\n[{datetime.now():%H:%M:%S}] Training final model on full dataset...")
     final_model = xgb.XGBRegressor(**best_params, verbosity=0)
-    final_model.fit(X, y, verbose=False)
+    final_model.fit(X, y_transformed, verbose=False)
 
     # ── SHAP explanation ─────────────────────────────────────────────────────
     print(f"[{datetime.now():%H:%M:%S}] Computing SHAP values...")
@@ -210,6 +233,8 @@ def train(
         "n_features": len(feature_cols),
         "feature_columns": feature_cols,
         "best_hyperparams": best_params,
+        "box_cox_transform": True,
+        "box_cox_lambda": float(transformer.lambdas_[0]),
         "oof_metrics": {
             "rmse": float(oof_rmse),
             "r2": float(oof_r2),
@@ -226,6 +251,9 @@ def train(
     if save_artifacts:
         with open(ARTIFACTS_DIR / "model.pkl", "wb") as f:
             pickle.dump(final_model, f)
+
+        with open(ARTIFACTS_DIR / "transformer.pkl", "wb") as f:
+            pickle.dump(transformer, f)
 
         with open(ARTIFACTS_DIR / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
