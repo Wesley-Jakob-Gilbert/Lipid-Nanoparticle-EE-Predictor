@@ -1,2 +1,0 @@
-#TODO
-Box-Cox transform did not seem to work to improve R^2. I want to look at visualizations to understand why, especially the graph of actual vs. expected EE%. That graph shows all pred EE% at 0... Need to fix that first to diagnose low R^2

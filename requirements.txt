@@ -1,0 +1,27 @@
+# Core ML / data
+numpy>=1.26.0
+pandas>=2.2.0
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+optuna>=3.6.0
+shap>=0.45.0
+
+# Cheminformatics
+rdkit>=2022.9.1
+
+# PINN (Physics-Informed Neural Network)
+torch>=2.0.0
+
+# API
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+
+# Analysis / notebooks
+matplotlib>=3.8.0
+seaborn>=0.13.0
+ipykernel>=6.29.0
+jupyter>=1.0.0
+
+# Testing
+pytest>=8.0.0

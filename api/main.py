@@ -24,7 +24,7 @@ warnings.filterwarnings("ignore")
 
 # Path resolution works whether run from /api or project root
 _HERE = Path(__file__).parent
-ARTIFACTS_DIR = _HERE / "artifacts"
+ARTIFACTS_DIR = _HERE.parent / "artifacts"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Load artifacts at startup

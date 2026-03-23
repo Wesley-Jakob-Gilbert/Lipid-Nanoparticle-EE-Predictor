@@ -7,7 +7,7 @@ from physicochemical formulation parameters. The model augments supervised MSE l
 **physics residuals** derived from first-principles lipid self-assembly thermodynamics,
 improving generalization from the small labeled datasets typical in LNP literature.
 
-## Results (LNP Atlas, 93 rows with EE data)
+## Results (LNP Atlas, 93 rows with all 7 features complete)
 
 | Split | R² | RMSE |
 |---|---|---|
@@ -16,10 +16,36 @@ improving generalization from the small labeled datasets typical in LNP literatu
 
 **Honest interpretation:** The model fits training data well but shows expected overfitting on the
 small validation set (R²=0.58). This is largely a **data limitation** — only 93 of 1,092 LNP Atlas
-records have quantitative EE% values, and EE variance is compressed (most values cluster 75–95%).
-The physics priors (R1–R3) help constrain predictions to physically plausible regions even where
-data is sparse. Model is best used for **rank-ordering candidate formulations**, not as a precision
-measurement tool. Performance is expected to improve substantially with >300 labeled EE records.
+records have all 7 required features present, and EE variance is compressed (most values cluster
+75–95%). The physics priors (R1–R3) help constrain predictions to physically plausible regions
+even where data is sparse. Model is best used for **rank-ordering candidate formulations**, not as
+a precision measurement tool. Performance is expected to improve substantially with >300 labeled
+EE records.
+
+## Why Only 93 Rows?
+
+The LNP Atlas contains 1,092 formulation records, of which ~527 have a quantitative EE% value.
+The PINN requires all 7 input features to be present (no imputation). Per-feature availability
+among the 527 EE rows:
+
+| Feature | Available rows |
+|---|---|
+| `ionizable_lipid_mole_fraction` | 484 |
+| `np_ratio` | 484 |
+| `particle_size_nm` | 489 |
+| `pdi` | 386 |
+| `zeta_mv` | **97** ← bottleneck |
+| `peg_fraction` | 484 |
+| `cholesterol_fraction` | 484 |
+
+`zeta_potential` is the binding constraint: only 97 of the ~527 EE rows have a reported zeta
+value, which is why `dropna()` across all 7 features yields 93 complete rows.
+
+**Future improvement:** Dropping `zeta_mv` from the feature set (6 features) would give
+approximately **323 usable rows** — roughly 3.5× more training data. Alternatively, imputing
+zeta from other formulation parameters (e.g., ionizable lipid pKa, mole fraction) could recover
+more rows while retaining the physical signal. Either path is expected to substantially improve
+validation performance.
 
 ## Physics Priors Encoded
 
@@ -59,12 +85,6 @@ Linear → GELU → Linear → Sigmoid   [output: EE ∈ [0,1]]
 
 ```bash
 # From project root
-python3 -c "
-import sys; sys.path.insert(0, 'pinn')
-from pinn.train import main
-" 
-# or use the CLI:
-cd lnp_ml_phase1/
 python -m pinn.train --data data/lnp_atlas_export.csv --epochs 300 --alpha 0.3 --out artifacts/pinn
 ```
 
