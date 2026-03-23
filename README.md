@@ -13,15 +13,15 @@ Trained on the open-source [LNP Atlas](https://www.nature.com/articles/s41565-02
 | Model | Val R² | Val RMSE | Val MAE | CV Strategy | Notes |
 |---|---|---|---|---|---|
 | XGBoost (Optuna-tuned) | 0.160 | 20.94% | 15.28% | GroupKFold (paper DOI) | Leakage-free; paper-level generalization |
-| **PINN** | **0.677** | **8.71%** | **7.09%** | Random 80/20 split | 7 physicochemical features; physics residuals R1–R3 |
+| **PINN** | **0.580** | **10.12%** | — | Random 80/20 split | 93 rows; 7 physicochemical features; physics residuals R1–R3 |
 
 ### Honest interpretation
 
 The PINN's higher R² vs XGBoost is **not an apples-to-apples comparison**:
 - XGBoost uses `GroupKFold` on `paper_doi` — the hardest eval, testing generalization to unseen papers
-- PINN uses random 80/20 split on 7 features — easier split, fewer features, smaller effective dataset (90 rows with all 7 features complete)
+- PINN uses random 80/20 split on 7 features — easier split, fewer features, smaller effective dataset (93 rows with all 7 features complete; EE values cluster 75–95% limiting variance)
 
-The PINN R²=0.677 is encouraging for a physics-constrained model on a small dataset. The XGBoost R²=0.160 under strict group-based CV reflects the genuine difficulty of cross-paper generalization — a more realistic deployment scenario.
+The PINN R²=0.58 is modest but expected for a physics-constrained model on a small dataset. The XGBoost R²=0.160 under strict group-based CV reflects the genuine difficulty of cross-paper generalization — a more realistic deployment scenario.
 
 Neither model should be used as a substitute for experimental measurement at this stage.
 
