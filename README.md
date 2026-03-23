@@ -2,7 +2,7 @@
 
 Machine learning and physics-informed neural network pipeline for predicting **lipid nanoparticle (LNP) encapsulation efficiency (EE%)** from formulation parameters and molecular descriptors.
 
-Trained on the open-source [LNP Atlas](https://www.nature.com/articles/s41565-023-01511-6) dataset — 1,092 LNP formulations curated from peer-reviewed literature.
+Trained on the open-source [LNP Atlas](https://lnp-atlas.kisti.re.kr/) dataset — 1,092 LNP formulations curated from peer-reviewed literature.
 
 **Status:** Active development. XGBoost baseline and PINN complete with unified GroupKFold evaluation. Expanding PINN dataset and adding API endpoint planned.
 
