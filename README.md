@@ -4,7 +4,7 @@ Machine learning and physics-informed neural network pipeline for predicting **l
 
 Trained on the open-source [LNP Atlas](https://www.nature.com/articles/s41565-023-01511-6) dataset — 1,092 LNP formulations curated from peer-reviewed literature.
 
-**Status:** Active development. XGBoost baseline and PINN are complete. Heteroscedasticity correction and unified evaluation planned.
+**Status:** Active development. XGBoost baseline and PINN complete with unified GroupKFold evaluation. Expanding PINN dataset and adding API endpoint planned.
 
 ---
 
@@ -18,23 +18,33 @@ The central challenge is data. Published LNP literature is heterogeneous — dif
 
 ## Results
 
-| Model | Val R² | Val RMSE | Training Rows | Features | CV Strategy |
+| Model | OOF R² | OOF RMSE | Rows | Features | CV Strategy |
 |---|---|---|---|---|---|
-| XGBoost (Optuna-tuned) | 0.160 | 20.94% | 523 | 76 | GroupKFold on paper DOI |
-| PINN (ResidualBlock MLP) | 0.580 | 10.12% | 93 | 7 | Random 80/20 split |
+| XGBoost (Optuna + Box-Cox) | 0.136 | 21.24% | 523 | 76 | GroupKFold (paper DOI) |
+| PINN (GroupKFold) | 0.438 | 11.25% | 93 | 7 | GroupKFold (paper DOI) |
+| PINN (random split) | 0.580 | 10.12% | 93 | 7 | Random 80/20 |
+
+#### PINN per-fold breakdown (GroupKFold)
+
+| Fold | Val samples | RMSE | R² | Held-out paper(s) |
+|---|---|---|---|---|
+| 1 | 30 | 13.25% | -0.057 | 1 paper |
+| 2 | 24 | 6.14% | 0.060 | 1 paper |
+| 3 | 23 | 13.90% | -0.921 | 1 paper |
+| 4 | 8 | 3.96% | -2.226 | 1 paper |
+| 5 | 8 | 11.38% | 0.446 | 3 papers |
 
 ### Honest interpretation
 
-The PINN's higher R² is **not an apples-to-apples comparison** and should not be read as "PINN beats XGBoost."
+Both models are evaluated under **GroupKFold on `paper_doi`** — the hardest and most realistic split, where no formulations from the same paper appear in both training and validation. This tests generalization to unseen labs and experimental protocols, which is what deployment actually requires.
 
-- The **XGBoost** evaluation uses `GroupKFold` on `paper_doi`, ensuring no formulations from the same paper appear in both training and validation. This is the hardest and most realistic split — it tests generalization to unseen labs and experimental protocols, which is what deployment actually requires.
-- The **PINN** uses a random 80/20 split on 93 rows. This is a much easier evaluation: samples from the same paper can appear on both sides of the split, and the effective variance in EE is compressed because values in this subset cluster between 75–95%.
+The PINN random-split R²=0.58 is included for reference but is **optimistic** — same-paper samples can leak across train/val, inflating performance. The GroupKFold R²=0.438 is the honest number.
 
-The PINN subset is also smaller because only 97 of 527 EE-labeled rows in the LNP Atlas have reported zeta potential — a required PINN input. That restriction to 93 complete rows limits generalizability.
+The PINN per-fold results reveal high variance: the model generalizes to some papers (Fold 2: RMSE=6.14%) but fails on others (Fold 3: R²=-0.92, meaning predictions are worse than predicting the mean). Negative R² values are expected with only 7 unique papers and 93 rows — each fold holds out an entire paper, and if that paper's formulations differ substantially from the training set, the model has no basis for generalization. Fold 4's R²=-2.23 reflects 8 validation samples where the model's predictions diverge sharply from observed values.
 
-The XGBoost R²=0.160 under strict group-based CV reflects the genuine difficulty of cross-paper generalization, not a failure of the model per se. The PINN R²=0.58 is encouraging for a physics-constrained model trained on 93 points, but the train R²=0.993 signals overfitting that the physics priors only partially mitigate at this dataset size.
+The XGBoost R²=0.136 under the same CV strategy reflects the same fundamental difficulty: cross-paper generalization from heterogeneous LNP literature is hard. The PINN's physics priors (R1-R3) provide some benefit (OOF RMSE 11.25% vs 21.24%), but not enough to overcome the data limitation.
 
-**Neither model should be used as a substitute for experimental measurement.** The intended use is rank-ordering candidate formulations to reduce experimental screening burden.
+**Neither model should be used as a substitute for experimental measurement.** The intended use is rank-ordering candidate formulations to reduce experimental screening burden. Performance is expected to improve substantially with more labeled data — particularly from diverse labs.
 
 ---
 
@@ -120,7 +130,7 @@ lnp-ee-predictor/
 |-- tests/
 |   `-- test_pipeline.py
 |-- artifacts/            # Saved models, SHAP values (gitignored)
-|-- data/                 # Raw CSV (gitignored)
+|-- data/                 # LNP Atlas dataset (included for reproducibility)
 |-- Dockerfile
 |-- docker-compose.yml
 `-- requirements.txt
@@ -211,11 +221,11 @@ curl -X POST http://localhost:8000/predict \
 ## Known Limitations
 
 - **PINN dataset size**: Only 93 of 1,092 LNP Atlas records have all 7 required features (zeta potential is the binding constraint — reported in fewer than 20% of EE-labeled rows). Performance is expected to improve substantially with >300 labeled, complete records.
-- **Evaluation mismatch**: XGBoost and PINN use different CV strategies and different subsets of the data. A fair comparison requires running PINN under `GroupKFold` on a matched dataset — this is planned but not yet implemented.
+- **Cross-paper generalization**: Both models struggle to generalize across papers under GroupKFold. The PINN subset contains only 7 unique papers, with 3 papers contributing 77 of 93 rows — fold-level R² is highly variable.
 - **Custom lipids**: Lipids without SMILES strings fall back to frequency-rank encoding, which carries no structural information. Novel scaffolds are a known weakness.
 - **N/P ratio approximation**: True N/P requires cargo concentration, which is inconsistently reported. The proxy (x_IL × 10) introduces noise into R1 enforcement.
 - **No biological activity**: EE% is necessary but not sufficient for transfection potency. Delivery efficacy in cells is not predicted.
-- **Heteroscedasticity**: EE variance is higher in the mid-range (40–70%) than at the extremes. The current MSE objective does not account for this; Box-Cox transformation and variance-weighted loss are planned.
+- **Heteroscedasticity**: EE variance is higher in the mid-range (40-70%) than at the extremes. Box-Cox transform is applied to the XGBoost target; variance-weighted loss for the PINN is planned.
 
 ---
 
@@ -223,8 +233,8 @@ curl -X POST http://localhost:8000/predict \
 
 - [x] XGBoost baseline: GroupKFold + Optuna + SHAP
 - [x] PINN: ResidualBlock MLP with physics residuals R1 (N/P monotonicity), R2 (thermodynamic mixing), R3 (boundary condition)
-- [ ] Heteroscedasticity correction: Box-Cox target transform + variance-weighted loss
-- [ ] Unified evaluation: PINN under GroupKFold for direct comparison with XGBoost
+- [x] Heteroscedasticity correction: Box-Cox target transform on XGBoost
+- [x] Unified evaluation: PINN under GroupKFold for direct comparison with XGBoost
 - [ ] Expand PINN dataset: impute missing zeta potential or relax the feature requirement
 - [ ] REST API endpoint for PINN inference (currently XGBoost only)
 - [ ] Transformer / attention architecture for formulation-level sequence modeling

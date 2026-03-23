@@ -54,10 +54,13 @@ def clean_numeric(series):
     )
 
 
-def load_and_preprocess(
-    csv_path: str,
-    **kwargs  # ignored; kept for API compat
-) -> Tuple[np.ndarray, np.ndarray, StandardScaler]:
+def _load_core(csv_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Shared data loading and feature engineering.
+
+    Returns:
+        feat: DataFrame with FEATURE_COLS + ["ee"], NaN-dropped.
+        df:   Original DataFrame filtered to rows with EE (before feature NaN drop).
+    """
     df = pd.read_csv(csv_path, encoding="latin-1", low_memory=False)
 
     # Filter to rows with EE
@@ -66,7 +69,7 @@ def load_and_preprocess(
     df = df[mask].copy()
     ee_vals = ee_raw[mask].values.astype(np.float32)
 
-    # Normalize EE: values are in percent (0–100) → fraction [0,1]
+    # Normalize EE: values are in percent (0-100) -> fraction [0,1]
     y = np.clip(ee_vals / 100.0, 0.0, 1.0)
 
     # Feature engineering
@@ -93,6 +96,15 @@ def load_and_preprocess(
     if len(feat) < 10:
         raise ValueError(f"Only {len(feat)} valid rows after NaN-drop — check your CSV.")
 
+    return feat, df
+
+
+def load_and_preprocess(
+    csv_path: str,
+    **kwargs  # ignored; kept for API compat
+) -> Tuple[np.ndarray, np.ndarray, StandardScaler]:
+    feat, _ = _load_core(csv_path)
+
     X_raw = feat[FEATURE_COLS].values.astype(np.float32)
     y_clean = feat["ee"].values.astype(np.float32)
 
@@ -101,3 +113,30 @@ def load_and_preprocess(
 
     print(f"[preprocess] {len(y_clean)} valid rows | EE mean={y_clean.mean():.3f} std={y_clean.std():.3f}")
     return X, y_clean, scaler
+
+
+def load_and_preprocess_with_groups(
+    csv_path: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load data and return unscaled features with paper_doi group IDs.
+
+    Returns unscaled X so the caller can fit a scaler per CV fold.
+
+    Returns:
+        X_raw:  Unscaled feature array, shape (n_samples, 7).
+        y:      EE fraction in [0, 1], shape (n_samples,).
+        groups: Integer-encoded paper_doi, shape (n_samples,).
+    """
+    feat, df = _load_core(csv_path)
+
+    X_raw = feat[FEATURE_COLS].values.astype(np.float32)
+    y = feat["ee"].values.astype(np.float32)
+
+    # Extract paper_doi for the rows that survived NaN-drop
+    doi_col = df.loc[feat.index, "paper_doi"].fillna("unknown")
+    unique_dois = {doi: i for i, doi in enumerate(doi_col.unique())}
+    groups = doi_col.map(unique_dois).values.astype(np.int64)
+
+    print(f"[preprocess] {len(y)} valid rows | {len(unique_dois)} unique paper groups | "
+          f"EE mean={y.mean():.3f} std={y.std():.3f}")
+    return X_raw, y, groups
