@@ -21,7 +21,7 @@ import pandas as pd
 import shap
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-from sklearn.model_selection import GroupKFold, cross_val_score
+from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import PowerTransformer, StandardScaler
 
 warnings.filterwarnings("ignore")
@@ -67,7 +67,12 @@ def make_groups(df: pd.DataFrame) -> np.ndarray:
 # Optuna objective
 # ─────────────────────────────────────────────────────────────────────────────
 
-def make_optuna_objective(X: np.ndarray, y: np.ndarray, groups: np.ndarray):
+def make_optuna_objective(X: np.ndarray, y_transformed: np.ndarray, groups: np.ndarray):
+    """Optimize RMSE in Box-Cox space.
+    This implicitly upweights errors at extreme EE% values (because Box-Cox with
+    lambda > 1 stretches high values), which prevents the model from collapsing
+    to predicting the mean for everything.
+    """
     def objective(trial):
         params = {
             "n_estimators": trial.suggest_int("n_estimators", 200, 2000),
@@ -83,9 +88,12 @@ def make_optuna_objective(X: np.ndarray, y: np.ndarray, groups: np.ndarray):
         }
         model = xgb.XGBRegressor(**params, verbosity=0)
         cv = GroupKFold(n_splits=5)
-        scores = cross_val_score(model, X, y, cv=cv, groups=groups,
-                                 scoring="neg_root_mean_squared_error", n_jobs=-1)
-        return -scores.mean()  # minimize RMSE
+        fold_rmses = []
+        for train_idx, val_idx in cv.split(X, y_transformed, groups):
+            model.fit(X[train_idx], y_transformed[train_idx], verbose=False)
+            preds = model.predict(X[val_idx])
+            fold_rmses.append(float(np.sqrt(mean_squared_error(y_transformed[val_idx], preds))))
+        return float(np.mean(fold_rmses))
 
     return objective
 
@@ -111,6 +119,12 @@ def train(
 
     feature_cols = get_feature_columns(df, TARGET_COL)
     print(f"  Feature count: {len(feature_cols)}")
+
+    training_medians = {
+        col: float(df[col].median())
+        for col in feature_cols
+        if col in df.columns
+    }
 
     X = df[feature_cols].values.astype(np.float32)
     y = df[TARGET_COL].values.astype(np.float32)
@@ -138,7 +152,7 @@ def train(
         study.optimize(make_optuna_objective(X, y_transformed, groups),
                        n_trials=n_optuna_trials, show_progress_bar=True)
         best_params = study.best_params
-        print(f"  Best RMSE (CV): {study.best_value:.2f}%")
+        print(f"  Best Box-Cox RMSE (CV): {study.best_value:.4f}")
     else:
         best_params = {
             "n_estimators": 1000,
@@ -178,10 +192,8 @@ def train(
             verbose=False,
         )
         preds_t = model_fold.predict(X_val)
-        preds = np.clip(
-            transformer.inverse_transform(preds_t.reshape(-1, 1)).ravel(),
-            0, 100,
-        )
+        preds_inv = transformer.inverse_transform(preds_t.reshape(-1, 1)).ravel()
+        preds = np.clip(np.nan_to_num(preds_inv, nan=0.0), 0, 100)
         oof_preds[val_idx] = preds
 
         fold_rmse = np.sqrt(mean_squared_error(y_val, preds))
@@ -213,8 +225,8 @@ def train(
 
     # ── SHAP explanation ─────────────────────────────────────────────────────
     print(f"[{datetime.now():%H:%M:%S}] Computing SHAP values...")
-    explainer = shap.TreeExplainer(final_model)
-    shap_values = explainer.shap_values(X)
+    explainer = shap.Explainer(final_model, X)
+    shap_values = explainer(X).values
 
     # Mean absolute SHAP per feature
     shap_importance = pd.Series(
@@ -246,6 +258,7 @@ def train(
         "fold_metrics": fold_metrics,
         "high_ee_threshold": HIGH_EE_THRESHOLD,
         "shap_top10": shap_importance.head(10).to_dict(),
+        "training_medians": training_medians,
     }
 
     if save_artifacts:
