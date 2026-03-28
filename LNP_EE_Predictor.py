@@ -1,107 +1,86 @@
 import streamlit as st
-import sys
-from pathlib import Path
 
-# Robustly find project root regardless of whether CWD is project root or pages/
-_HERE = Path(__file__).resolve().parent
-_ROOT = next(
-    (p for p in [_HERE, _HERE.parent, _HERE.parent.parent] if (p / 'src').exists()),
-    _HERE,
-)
-sys.path.insert(0, str(_ROOT / 'src'))
-sys.path.insert(0, str(_ROOT))
+st.set_page_config(page_title="LNP EE Predictor", page_icon="\U0001f9ec", layout="wide")
 
-import json
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+from streamlit_utils import load_metadata, load_pinn_metrics
 
-from features import build_feature_matrix, get_feature_columns
+# ── Landing page ─────────────────────────────────────────────────────────────
 
-sns.set_theme(style='whitegrid', palette='muted', font_scale=1.2)
-ARTIFACTS = _ROOT / 'artifacts'
-DATA_PATH = _ROOT / 'data' / 'lnp_atlas_export.csv'
-
-TARGET_COL = 'encapsulation_efficiency_percent_std'
-
-st.set_page_config(page_title="LNP EE Predictor", layout="wide")
 st.title("LNP Encapsulation Efficiency Predictor")
+st.caption(
+    "Machine learning models for predicting lipid nanoparticle encapsulation "
+    "efficiency, trained on the LNP Atlas (1,092 formulations)"
+)
 
-# -----------------------------------------------------------
-# Load and featurize data (cached so it only runs once)
-# -----------------------------------------------------------
+# Metric cards
+meta = load_metadata()
+pinn = load_pinn_metrics()
 
-@st.cache_data
-def load_data():
-    df_raw = pd.read_csv(DATA_PATH, encoding='latin-1')
-    df = build_feature_matrix(df_raw, drop_ee_na=True)
-    return df
+c1, c2, c3 = st.columns(3)
+c1.metric("Dataset", "1,092 formulations", delta=f"{meta['n_train_samples']} with EE%")
+c2.metric("XGBoost Features", str(meta["n_features"]),
+          delta=f"OOF R\u00b2 = {meta['oof_metrics']['r2']:.3f}")
+c3.metric("PINN Features", f"{pinn['n_features']} physicochemical",
+          delta=f"Val R\u00b2 = {pinn['val_r2']:.3f}")
 
+# Project overview
+st.markdown("""
+### About This Project
 
-st.subheader("Load Data from LNP Atlas")
+This project tackles a real problem in nanomedicine: **predicting how efficiently
+lipid nanoparticles (LNPs) encapsulate therapeutic cargo** like mRNA and siRNA.
 
-with st.status("Loading & Featurizing Data", expanded=False) as status:
-    df = load_data()
-    feat_cols = get_feature_columns(df, TARGET_COL)
-    X = df[feat_cols].values
-    y = df[TARGET_COL].values
-    st.write(df)
-    st.write(f'Usable rows: {len(df)} | Features: {len(feat_cols)}')
-    status.update(label="Featurization complete", state="complete", expanded=True)
+Two complementary modeling approaches are compared:
 
+- **XGBoost** uses 76 engineered features (molecular descriptors, molar ratios,
+  synthesis conditions) with Optuna hyperparameter optimization and Box-Cox
+  target transformation.
+- **Physics-Informed Neural Network (PINN)** uses 7 physicochemical features
+  with three physics-derived loss terms enforcing thermodynamic and electrostatic
+  priors.
 
-# -----------------------------------------------------------
-# Train XGBoost model
-# -----------------------------------------------------------
-st.subheader("Train XGBoost Model")
+Both models are evaluated with **GroupKFold cross-validation** on `paper_doi` to
+prevent data leakage from correlated measurements within the same study. Current
+performance is modest (XGBoost OOF R\u00b2 = 0.14, PINN OOF R\u00b2 = 0.44) \u2014 an honest
+reflection of the difficulty of predicting EE% from formulation parameters alone.
+""")
 
-if st.button("Train XGBoost"):
-    with st.spinner("Training XGBoost with Optuna (this may take a few minutes)..."):
-        import train as train_xg
-        xg_results = train_xg.train(n_optuna_trials=50)
-    st.success("XGBoost training complete!")
-    st.json(xg_results)
+# Navigation cards
+st.markdown("### Explore")
+n1, n2, n3 = st.columns(3)
+with n1:
+    st.page_link("pages/1_Data_Exploration.py", label="Data Exploration",
+                 icon="\U0001f4ca")
+    st.caption("Interactive exploration of the LNP Atlas dataset")
+with n2:
+    st.page_link("pages/2_XGBoost_Model.py", label="XGBoost Model",
+                 icon="\U0001f332")
+    st.caption("Feature importance, SHAP analysis, and live predictions")
+with n3:
+    st.page_link("pages/3_PINN_Model.py", label="PINN Model",
+                 icon="\U0001f9e0")
+    st.caption("Architecture, physics losses, training replay, and predictions")
 
+# Data flow diagram
+st.markdown("### Pipeline Architecture")
+st.graphviz_chart("""
+digraph pipeline {
+    rankdir=LR
+    node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11]
+    edge [color="#95A5A6"]
 
-# -----------------------------------------------------------
-# Train PINN model (via subprocess — pinn.train uses argparse)
-# -----------------------------------------------------------
-st.subheader("Train PINN Model")
+    csv  [label="LNP Atlas\\n(1,092 rows)", fillcolor="#F5F7FA"]
+    feat [label="Feature\\nEngineering", fillcolor="#F5F7FA"]
 
-if st.button("Train PINN"):
-    import subprocess
-    with st.spinner("Training PINN (this may take a few minutes)..."):
-        result = subprocess.run(
-            [sys.executable, "-m", "pinn.train",
-             "--data", str(DATA_PATH),
-             "--epochs", "200",
-             "--alpha", "0.3",
-             "--out", str(ARTIFACTS / "pinn")],
-            capture_output=True, text=True, cwd=str(_ROOT),
-        )
-    if result.returncode == 0:
-        st.success("PINN training complete!")
-        st.text(result.stdout)
-        # Load saved metrics if available
-        pinn_metrics_path = ARTIFACTS / "pinn" / "pinn_training_history.json"
-        if pinn_metrics_path.exists():
-            with open(pinn_metrics_path) as f:
-                st.json(json.load(f)[-1])  # show final epoch
-    else:
-        st.error("PINN training failed")
-        st.text(result.stderr)
+    xgb  [label="XGBoost\\n76 features", fillcolor="#D6EAF8"]
+    pinn [label="PINN\\n7 features", fillcolor="#FADBD8"]
 
+    ee   [label="EE %\\nPrediction", fillcolor="#D5F5E3"]
 
-# -----------------------------------------------------------
-# TODO: See basic model evaluations
-# -----------------------------------------------------------
-
-# -----------------------------------------------------------
-# TODO: See SHAP values
-# -----------------------------------------------------------
-
-# -----------------------------------------------------------
-# TODO: Selectbox among multiple existing rows that shows
-# predicted from XGBoost and PINN and actual EE%
-# -----------------------------------------------------------
+    csv  -> feat
+    feat -> xgb
+    feat -> pinn
+    xgb  -> ee
+    pinn -> ee
+}
+""")

@@ -28,3 +28,5 @@ pytest>=8.0.0
 
 # Visualization
 streamlit>=1.55.0
+plotly>=5.18.0
+graphviz>=0.20.0
