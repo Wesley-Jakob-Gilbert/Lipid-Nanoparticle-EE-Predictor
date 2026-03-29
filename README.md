@@ -245,7 +245,7 @@ curl -X POST http://localhost:8000/predict \
 
 If you use this code or the underlying dataset, please cite the LNP Atlas:
 
-> Sebastián Rojas Quiñones et al. "The LNP Atlas: A Comprehensive Repository of Lipid Nanoparticle Formulations for Nucleic Acid Delivery." *Nature Nanotechnology* (2023). https://doi.org/10.1038/s41565-023-01511-6
+> Song Seunghun, Baek Jueun, Sangjae Seo* "LNP Atlas: A Comprehensive Dataset of Lipid Nanoparticle Compositions and Properties for Nucleic Acid Delivery." *Nature Nanotechnology* (2025). https://www.nature.com/articles/s41597-025-06456-w
 
 Physics residual references:
 
