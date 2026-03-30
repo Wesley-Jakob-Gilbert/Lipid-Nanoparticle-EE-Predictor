@@ -15,7 +15,7 @@ import streamlit as st
 # ── Paths ────────────────────────────────────────────────────────────────────
 _ROOT = Path(__file__).resolve().parent
 ARTIFACTS = _ROOT / "artifacts"
-DATA_PATH = _ROOT / "data" / "lnp_atlas_export.csv"
+DATA_PATH = _ROOT / "data" / "lnp_atlas_cleaned.csv"
 
 # Ensure src/ and project root are importable
 sys.path.insert(0, str(_ROOT / "src"))

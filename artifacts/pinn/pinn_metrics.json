@@ -16,5 +16,7 @@
   "oof_rmse_pct": 28.06,
   "alpha_physics": 0.3,
   "epochs": 300,
-  "data_source": "lnp_atlas_cleaned.csv"
+  "data_source": "lnp_atlas_cleaned.csv",
+  "val_r2": 0.4913,
+  "val_mse": 0.011936
 }

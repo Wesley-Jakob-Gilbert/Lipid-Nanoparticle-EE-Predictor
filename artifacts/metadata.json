@@ -1,15 +1,54 @@
 {
+  "n_train_samples": 636,
+  "n_features": 88,
+  "oof_metrics": {
+    "r2": 0.082,
+    "rmse": 20.63,
+    "cv": "GroupKFold(paper_doi, k=5)",
+    "fold_metrics": [
+      {
+        "fold": 1,
+        "n": 128,
+        "r2": -0.0999,
+        "rmse": 16.83
+      },
+      {
+        "fold": 2,
+        "n": 127,
+        "r2": -0.1293,
+        "rmse": 28.7
+      },
+      {
+        "fold": 3,
+        "n": 127,
+        "r2": 0.035,
+        "rmse": 17.28
+      },
+      {
+        "fold": 4,
+        "n": 127,
+        "r2": -0.2228,
+        "rmse": 15.0
+      },
+      {
+        "fold": 5,
+        "n": 127,
+        "r2": 0.2828,
+        "rmse": 22.34
+      }
+    ]
+  },
   "model": "XGBoost",
-  "n_samples": 636,
-  "n_features": 78,
-  "oof_r2": -0.0324,
-  "oof_rmse_pct": 21.88,
-  "cv": "GroupKFold(paper_doi,k=5)",
   "data_source": "lnp_atlas_cleaned.csv",
   "feature_cols": [
     "particle_size_nm_std",
     "pdi_std",
     "zeta_potential_mv_std",
+    "np_ratio_actual",
+    "paper_year_feat",
+    "journal_tier",
+    "is_mrna",
+    "is_sirna",
     "particle_size_nm_std__missing",
     "pdi_std__missing",
     "zeta_potential_mv_std__missing",
@@ -84,13 +123,33 @@
     "ionizable_lipid__freq_rank",
     "peg_lipid__freq_rank",
     "helper_lipid__freq_rank",
-    "sterol_lipid__freq_rank"
+    "sterol_lipid__freq_rank",
+    "np_ratio_actual",
+    "paper_year_feat",
+    "journal_tier",
+    "is_mrna",
+    "is_sirna"
   ],
-  "top_features": {},
+  "top_features": {
+    "paper_year_feat": 1125.2003,
+    "peg_lipid__freq_rank": 2288.8413,
+    "ratio_helper": 1448.3481,
+    "synth_flow_ratio": 1438.5482,
+    "ratio_ionizable_norm": 1296.2452,
+    "ratio_peg": 897.991,
+    "ratio_ionizable": 606.9747,
+    "ionizable_lipid__freq_rank": 551.8261,
+    "pdi_std__missing": 441.4727
+  },
   "training_medians": {
     "particle_size_nm_std": 109.0,
     "pdi_std": 0.15000000596046448,
     "zeta_potential_mv_std": 6.699999809265137,
+    "np_ratio_actual": 5.670000076293945,
+    "paper_year_feat": 2022.0,
+    "journal_tier": 1.0,
+    "is_mrna": 1.0,
+    "is_sirna": 0.0,
     "particle_size_nm_std__missing": 0.0,
     "pdi_std__missing": 0.0,
     "zeta_potential_mv_std__missing": 1.0,
@@ -166,5 +225,6 @@
     "peg_lipid__freq_rank": 141.0,
     "helper_lipid__freq_rank": 321.0,
     "sterol_lipid__freq_rank": 627.0
-  }
+  },
+  "notes": "Extra features: np_ratio_actual (N:P from loading_capacity_std), paper_year, journal_tier, is_mrna, is_sirna"
 }
