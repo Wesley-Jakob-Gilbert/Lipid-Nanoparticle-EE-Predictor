@@ -1,8 +1,12 @@
 {
-  "trained_at": "2026-03-25T21:05:44.612403",
-  "n_train_samples": 523,
-  "n_features": 76,
-  "feature_columns": [
+  "model": "XGBoost",
+  "n_samples": 636,
+  "n_features": 78,
+  "oof_r2": -0.0324,
+  "oof_rmse_pct": 21.88,
+  "cv": "GroupKFold(paper_doi,k=5)",
+  "data_source": "lnp_atlas_cleaned.csv",
+  "feature_cols": [
     "particle_size_nm_std",
     "pdi_std",
     "zeta_potential_mv_std",
@@ -69,9 +73,11 @@
     "target_DNA",
     "target_empty",
     "target_mRNA",
+    "target_protein",
     "target_siRNA",
     "synth_bulk",
     "synth_ethanol_injection",
+    "synth_film_hydration",
     "synth_microfluidic",
     "synth_nanoprecipitation",
     "synth_unknown",
@@ -80,70 +86,11 @@
     "helper_lipid__freq_rank",
     "sterol_lipid__freq_rank"
   ],
-  "best_hyperparams": {
-    "n_estimators": 357,
-    "learning_rate": 0.01298489566140885,
-    "max_depth": 3,
-    "subsample": 0.6001988646074896,
-    "colsample_bytree": 0.516936496233954,
-    "min_child_weight": 17,
-    "reg_alpha": 3.6719068020404147e-06,
-    "reg_lambda": 7.129383767387902
-  },
-  "box_cox_transform": true,
-  "box_cox_lambda": 1.6576528549194336,
-  "oof_metrics": {
-    "rmse": 21.239587005220788,
-    "r2": 0.1363406777381897,
-    "mae": 15.374829292297363,
-    "high_ee_precision": 0.8657718120805369,
-    "high_ee_recall": 0.42857142857142855,
-    "high_ee_f1": 0.5733333333333333
-  },
-  "fold_metrics": [
-    {
-      "fold": 1,
-      "rmse": 11.860777358621199,
-      "r2": 0.4128469228744507
-    },
-    {
-      "fold": 2,
-      "rmse": 27.868917716822647,
-      "r2": -0.12081038951873779
-    },
-    {
-      "fold": 3,
-      "rmse": 16.193166087263094,
-      "r2": -0.19583237171173096
-    },
-    {
-      "fold": 4,
-      "rmse": 28.1061438526459,
-      "r2": 0.06976562738418579
-    },
-    {
-      "fold": 5,
-      "rmse": 16.962981365797884,
-      "r2": 0.35170143842697144
-    }
-  ],
-  "high_ee_threshold": 80.0,
-  "shap_top10": {
-    "peg_lipid__freq_rank": 0.24464712715874448,
-    "ratio_helper": 0.21543228854816657,
-    "particle_size_nm_std": 0.09201530477747281,
-    "ratio_ionizable_norm": 0.07991147931688433,
-    "ratio_peg": 0.07806575295043451,
-    "ionizable_lipid__freq_rank": 0.06990779067468281,
-    "synth_ph": 0.04144577752830095,
-    "ratio_ionizable": 0.04091437526757859,
-    "pdi_std": 0.031300878051267626,
-    "synth_flow_ratio": 0.026050311722784287
-  },
+  "top_features": {},
   "training_medians": {
-    "particle_size_nm_std": 100.0,
-    "pdi_std": 0.15,
-    "zeta_potential_mv_std": 6.7,
+    "particle_size_nm_std": 109.0,
+    "pdi_std": 0.15000000596046448,
+    "zeta_potential_mv_std": 6.699999809265137,
     "particle_size_nm_std__missing": 0.0,
     "pdi_std__missing": 0.0,
     "zeta_potential_mv_std__missing": 1.0,
@@ -193,13 +140,13 @@
     "helper_lipid__FractionCSP3": 0.0,
     "feat__il_logp_x_ratio": 0.0,
     "feat__peg_mw_x_ratio": 0.0,
-    "ratio_ionizable": 46.3,
+    "ratio_ionizable": 45.0,
     "ratio_peg": 2.5,
     "ratio_sterol": 38.5,
     "ratio_helper": 10.0,
-    "ratio_ionizable_norm": 0.46299999999999997,
-    "synth_flow_rate": 2.4,
-    "synth_flow_ratio": 3.0,
+    "ratio_ionizable_norm": 0.4039291441440582,
+    "synth_flow_rate": 2.4000000953674316,
+    "synth_flow_ratio": 1.0,
     "synth_ph": 4.0,
     "synth_is_microfluidic": 1.0,
     "target_difficulty": 3.0,
@@ -207,15 +154,17 @@
     "target_DNA": 0.0,
     "target_empty": 0.0,
     "target_mRNA": 1.0,
+    "target_protein": 0.0,
     "target_siRNA": 0.0,
     "synth_bulk": 0.0,
     "synth_ethanol_injection": 0.0,
+    "synth_film_hydration": 0.0,
     "synth_microfluidic": 1.0,
     "synth_nanoprecipitation": 0.0,
     "synth_unknown": 0.0,
-    "ionizable_lipid__freq_rank": 52.0,
-    "peg_lipid__freq_rank": 115.0,
-    "helper_lipid__freq_rank": 235.0,
-    "sterol_lipid__freq_rank": 514.0
+    "ionizable_lipid__freq_rank": 63.0,
+    "peg_lipid__freq_rank": 141.0,
+    "helper_lipid__freq_rank": 321.0,
+    "sterol_lipid__freq_rank": 627.0
   }
 }

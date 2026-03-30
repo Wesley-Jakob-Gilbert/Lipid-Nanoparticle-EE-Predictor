@@ -1,26 +1,35 @@
 """
-preprocess.py — Feature engineering for the LNP EE PINN.
-Adapted for the LNP Atlas schema (lnp_atlas_export.csv).
+preprocess.py — Feature engineering for LNP EE PINN.
 
-Features derived:
-    ionizable_lipid_mole_fraction  — IL fraction from lipid_molar_ratio
-    np_ratio                       — N/P proxy (x_IL * 10)
-    particle_size_nm               — from particle_size_nm_std
-    pdi                            — from pdi_std
-    zeta_mv                        — from zeta_potential_mv_std
-    peg_fraction                   — from lipid_molar_ratio (2nd component)
-    cholesterol_fraction           — from lipid_molar_ratio (3rd component)
+Supports two feature sets:
+  - FEATURE_COLS (6 features, no zeta): 327 usable rows from cleaned LNP Atlas
+  - FEATURE_COLS_WITH_ZETA (7 features): 101 usable rows
+
+The no-zeta set is the default and recommended for training due to 3x more data.
+Physics residuals R1, R2, R3 do not use zeta, so physics loss is unaffected.
 """
 
 import re
 import warnings
-from typing import Tuple
+from typing import Tuple, List
 
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
+
+# ─── Feature sets ─────────────────────────────────────────────────────────────
+
 FEATURE_COLS = [
+    "ionizable_lipid_mole_fraction",   # x_IL
+    "np_ratio",                         # N/P proxy
+    "particle_size_nm",                 # DLS Z-average
+    "pdi",                              # polydispersity index
+    "peg_fraction",                     # PEG-lipid mol fraction
+    "cholesterol_fraction",             # cholesterol mol fraction
+]
+
+FEATURE_COLS_WITH_ZETA = [
     "ionizable_lipid_mole_fraction",
     "np_ratio",
     "particle_size_nm",
@@ -30,10 +39,14 @@ FEATURE_COLS = [
     "cholesterol_fraction",
 ]
 
+# Index maps used by physics residuals
 FEATURE_INDEX = {col: i for i, col in enumerate(FEATURE_COLS)}
+FEATURE_INDEX_WITH_ZETA = {col: i for i, col in enumerate(FEATURE_COLS_WITH_ZETA)}
 
 
-def parse_molar_ratio(ratio_str):
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _parse_molar_ratio(ratio_str):
     try:
         parts = [float(x) for x in str(ratio_str).split(":")]
         if len(parts) != 4:
@@ -46,97 +59,113 @@ def parse_molar_ratio(ratio_str):
         return (np.nan,) * 4
 
 
-def clean_numeric(series):
-    """Strip ~ and other non-numeric chars, coerce to float."""
+def _clean_numeric(series):
     return pd.to_numeric(
         series.astype(str).str.replace(r"[~<>≈]", "", regex=True).str.strip(),
         errors="coerce"
     )
 
 
-def _load_core(csv_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Shared data loading and feature engineering.
+def _parse_ee_robust(val):
+    """Robust EE parser handling ± noise, ranges, and dual-assay entries."""
+    if pd.isna(val):
+        return None
+    s = str(val).strip()
+    try:
+        return float(s)
+    except:
+        pass
+    s2 = re.sub(r'^[><=~≈?¿]+', '', s).strip()
+    try:
+        return float(s2)
+    except:
+        pass
+    # ± or ¡¾ encoded ±
+    pm = re.match(r'^([\d.]+)\s*(?:¡¾|±|\+/-|--)\s*[\d.]+', s)
+    if pm:
+        try:
+            return float(pm.group(1))
+        except:
+            pass
+    # dual-assay: first number before '('
+    semi = re.match(r'^([\d.]+)\s*\(', s)
+    if semi:
+        try:
+            return float(semi.group(1))
+        except:
+            pass
+    # range: midpoint
+    rng = re.match(r'^([\d.]+)\s*[-–]\s*([\d.]+)$', s2)
+    if rng:
+        try:
+            return (float(rng.group(1)) + float(rng.group(2))) / 2.0
+        except:
+            pass
+    return None
+
+
+# ─── Main loader ──────────────────────────────────────────────────────────────
+
+def load_and_preprocess(
+    csv_path: str,
+    include_zeta: bool = False,
+    **kwargs,
+) -> Tuple[np.ndarray, np.ndarray, StandardScaler]:
+    """
+    Load CSV, engineer features, standardize.
+
+    Args:
+        csv_path:     Path to lnp_atlas_cleaned.csv or lnp_atlas_export.csv
+        include_zeta: If True, include zeta_mv as a feature (fewer rows).
+                      Default False (recommended — 3x more data).
 
     Returns:
-        feat: DataFrame with FEATURE_COLS + ["ee"], NaN-dropped.
-        df:   Original DataFrame filtered to rows with EE (before feature NaN drop).
+        X:      Standardized feature array, shape (N, n_features).
+        y:      EE targets in [0, 1], shape (N,).
+        scaler: Fitted StandardScaler.
     """
     df = pd.read_csv(csv_path, encoding="latin-1", low_memory=False)
 
-    # Filter to rows with EE
-    ee_raw = clean_numeric(df["encapsulation_efficiency_percent_std"])
-    mask = ee_raw.notna()
-    df = df[mask].copy()
-    ee_vals = ee_raw[mask].values.astype(np.float32)
+    # Use pre-cleaned EE column if available, else parse raw
+    if "encapsulation_efficiency_clean" in df.columns:
+        ee_vals = pd.to_numeric(df["encapsulation_efficiency_clean"], errors="coerce")
+    else:
+        ee_vals = df["encapsulation_efficiency_percent_std"].apply(_parse_ee_robust)
+        ee_vals = pd.to_numeric(ee_vals, errors="coerce")
 
-    # Normalize EE: values are in percent (0-100) -> fraction [0,1]
-    y = np.clip(ee_vals / 100.0, 0.0, 1.0)
-
-    # Feature engineering
-    ratios = df["lipid_molar_ratio"].apply(parse_molar_ratio)
+    # Parse molar ratios
+    ratios = df["lipid_molar_ratio"].apply(_parse_molar_ratio)
     ratio_df = pd.DataFrame(
         ratios.tolist(),
-        columns=["ionizable_lipid_mole_fraction", "peg_fraction",
-                 "cholesterol_fraction", "helper_frac"],
+        columns=["il_frac", "peg_frac", "chol_frac", "helper_frac"],
         index=df.index,
     )
 
     feat = pd.DataFrame(index=df.index)
-    feat["ionizable_lipid_mole_fraction"] = ratio_df["ionizable_lipid_mole_fraction"]
+    feat["ionizable_lipid_mole_fraction"] = ratio_df["il_frac"]
     feat["np_ratio"] = feat["ionizable_lipid_mole_fraction"] * 10.0
-    feat["particle_size_nm"] = clean_numeric(df["particle_size_nm_std"])
-    feat["pdi"] = clean_numeric(df["pdi_std"])
-    feat["zeta_mv"] = clean_numeric(df["zeta_potential_mv_std"])
-    feat["peg_fraction"] = ratio_df["peg_fraction"]
-    feat["cholesterol_fraction"] = ratio_df["cholesterol_fraction"]
-    feat["ee"] = y
+    feat["particle_size_nm"] = _clean_numeric(df["particle_size_nm_std"])
+    feat["pdi"] = _clean_numeric(df["pdi_std"])
+    if include_zeta:
+        feat["zeta_mv"] = _clean_numeric(df["zeta_potential_mv_std"])
+    feat["peg_fraction"] = ratio_df["peg_frac"]
+    feat["cholesterol_fraction"] = ratio_df["chol_frac"]
+    feat["ee"] = np.clip(ee_vals / 100.0, 0.0, 1.0)
 
-    feat = feat[FEATURE_COLS + ["ee"]].dropna()
+    feat_cols = FEATURE_COLS_WITH_ZETA if include_zeta else FEATURE_COLS
+    feat = feat[feat_cols + ["ee"]].dropna()
 
     if len(feat) < 10:
-        raise ValueError(f"Only {len(feat)} valid rows after NaN-drop — check your CSV.")
+        raise ValueError(f"Only {len(feat)} valid rows — check CSV path and columns.")
 
-    return feat, df
-
-
-def load_and_preprocess(
-    csv_path: str,
-    **kwargs  # ignored; kept for API compat
-) -> Tuple[np.ndarray, np.ndarray, StandardScaler]:
-    feat, _ = _load_core(csv_path)
-
-    X_raw = feat[FEATURE_COLS].values.astype(np.float32)
-    y_clean = feat["ee"].values.astype(np.float32)
+    X_raw = feat[feat_cols].values.astype(np.float32)
+    y = feat["ee"].values.astype(np.float32)
 
     scaler = StandardScaler()
     X = scaler.fit_transform(X_raw).astype(np.float32)
 
-    print(f"[preprocess] {len(y_clean)} valid rows | EE mean={y_clean.mean():.3f} std={y_clean.std():.3f}")
-    return X, y_clean, scaler
-
-
-def load_and_preprocess_with_groups(
-    csv_path: str,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Load data and return unscaled features with paper_doi group IDs.
-
-    Returns unscaled X so the caller can fit a scaler per CV fold.
-
-    Returns:
-        X_raw:  Unscaled feature array, shape (n_samples, 7).
-        y:      EE fraction in [0, 1], shape (n_samples,).
-        groups: Integer-encoded paper_doi, shape (n_samples,).
-    """
-    feat, df = _load_core(csv_path)
-
-    X_raw = feat[FEATURE_COLS].values.astype(np.float32)
-    y = feat["ee"].values.astype(np.float32)
-
-    # Extract paper_doi for the rows that survived NaN-drop
-    doi_col = df.loc[feat.index, "paper_doi"].fillna("unknown")
-    unique_dois = {doi: i for i, doi in enumerate(doi_col.unique())}
-    groups = doi_col.map(unique_dois).values.astype(np.int64)
-
-    print(f"[preprocess] {len(y)} valid rows | {len(unique_dois)} unique paper groups | "
+    zeta_note = "with zeta" if include_zeta else "no zeta"
+    print(f"[preprocess] {len(y)} rows | {len(feat_cols)} features ({zeta_note}) | "
           f"EE mean={y.mean():.3f} std={y.std():.3f}")
-    return X_raw, y, groups
+    return X, y, scaler
+

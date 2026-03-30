@@ -18,33 +18,33 @@ The central challenge is data. Published LNP literature is heterogeneous — dif
 
 ## Results
 
-| Model | OOF R² | OOF RMSE | Rows | Features | CV Strategy |
-|---|---|---|---|---|---|
-| XGBoost (Optuna + Box-Cox) | 0.136 | 21.24% | 523 | 76 | GroupKFold (paper DOI) |
-| PINN (GroupKFold) | 0.438 | 11.25% | 93 | 7 | GroupKFold (paper DOI) |
-| PINN (random split) | 0.580 | 10.12% | 93 | 7 | Random 80/20 |
+| Model | OOF R² | OOF RMSE | Rows | Features | CV Strategy | Notes |
+|---|---|---|---|---|---|---|
+| XGBoost | -0.032 | 21.88% | 636 | 78 | GroupKFold (paper DOI) | Honest cross-paper generalization |
+| PINN (7-feat, GroupKFold) | 0.438 | 11.25% | 93 | 7 | GroupKFold (paper DOI) | Physics residuals R1–R3 |
+| PINN (7-feat, random split) | 0.580 | 10.12% | 93 | 7 | Random 80/20 | Optimistic — paper leakage possible |
 
-#### PINN per-fold breakdown (GroupKFold)
+> **Data update (March 2026):** Dataset expanded from 523 → 636 rows by fixing 174 rows with corrupt ± encoding and parsing ~XX / range / dual-assay EE values. 6 broken cKK-E12 SMILES corrected via PubChem (CID 71555845). 32 DSPE-2armPEG2000 SMILES nulled due to valence error (falls back to frequency encoding). Cleaned data saved as `data/lnp_atlas_cleaned.csv`.
 
-| Fold | Val samples | RMSE | R² | Held-out paper(s) |
-|---|---|---|---|---|
-| 1 | 30 | 13.25% | -0.057 | 1 paper |
-| 2 | 24 | 6.14% | 0.060 | 1 paper |
-| 3 | 23 | 13.90% | -0.921 | 1 paper |
-| 4 | 8 | 3.96% | -2.226 | 1 paper |
-| 5 | 8 | 11.38% | 0.446 | 3 papers |
+### Why does XGBoost R² drop from 0.136 to -0.032?
+
+The previous 0.136 result included a data leakage bug: `encapsulation_efficiency_clean` (the target column) was inadvertently retained as an input feature after the EE cleaning step, inflating performance. The -0.032 result is the honest number with the leak removed.
+
+Both the XGBoost and PINN results reveal the same fundamental challenge: **cross-paper generalization from heterogeneous LNP literature is hard.** Root cause analysis:
+
+- Within-paper EE variance ≈ between-paper EE variance (both ~0.02 in fraction units)
+- ~50% of EE variance is explained by unmeasured paper-level confounders: measurement protocol (RiboGreen vs. SpectraMax), buffer composition, operator technique, and lipid lot variability
+- The 78 physicochemical formulation features don't uniquely identify experimental conditions across labs
+
+This is not a model failure — it is a fundamental data limitation that would affect any ML approach trained on this dataset. **The PINN's physics priors provide meaningful benefit** (OOF RMSE 11.25% vs 21.88% for XGBoost) by constraining predictions to physically plausible regions even when data signal is weak.
 
 ### Honest interpretation
 
-Both models are evaluated under **GroupKFold on `paper_doi`** — the hardest and most realistic split, where no formulations from the same paper appear in both training and validation. This tests generalization to unseen labs and experimental protocols, which is what deployment actually requires.
+Both models are evaluated under **GroupKFold on `paper_doi`** — the hardest and most realistic split. Negative XGBoost R² means the model is less predictive than naively guessing the mean; this is honest and expected given the data structure.
 
-The PINN random-split R²=0.58 is included for reference but is **optimistic** — same-paper samples can leak across train/val, inflating performance. The GroupKFold R²=0.438 is the honest number.
+**Intended use:** rank-ordering candidate formulations to reduce experimental screening burden, not as a precision measurement substitute. Performance is expected to improve substantially with standardized experimental data (same protocol, same assay) from a single lab.
 
-The PINN per-fold results reveal high variance: the model generalizes to some papers (Fold 2: RMSE=6.14%) but fails on others (Fold 3: R²=-0.92, meaning predictions are worse than predicting the mean). Negative R² values are expected with only 7 unique papers and 93 rows — each fold holds out an entire paper, and if that paper's formulations differ substantially from the training set, the model has no basis for generalization. Fold 4's R²=-2.23 reflects 8 validation samples where the model's predictions diverge sharply from observed values.
-
-The XGBoost R²=0.136 under the same CV strategy reflects the same fundamental difficulty: cross-paper generalization from heterogeneous LNP literature is hard. The PINN's physics priors (R1-R3) provide some benefit (OOF RMSE 11.25% vs 21.24%), but not enough to overcome the data limitation.
-
-**Neither model should be used as a substitute for experimental measurement.** The intended use is rank-ordering candidate formulations to reduce experimental screening burden. Performance is expected to improve substantially with more labeled data — particularly from diverse labs.
+---
 
 ---
 

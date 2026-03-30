@@ -1,19 +1,18 @@
 {
-  "tag": "pinn",
-  "n_samples": 102,
-  "n_features": 7,
+  "tag": "pinn_no_zeta",
+  "n_samples": 332,
+  "n_features": 6,
   "feature_cols": [
     "ionizable_lipid_mole_fraction",
     "np_ratio",
     "particle_size_nm",
     "pdi",
-    "zeta_mv",
     "peg_fraction",
     "cholesterol_fraction"
   ],
-  "include_zeta": true,
-  "oof_r2": -2.6235,
-  "oof_rmse_pct": 28.06,
+  "include_zeta": false,
+  "oof_r2": -1.0903,
+  "oof_rmse_pct": 33.92,
   "alpha_physics": 0.3,
   "epochs": 300,
   "data_source": "lnp_atlas_cleaned.csv"
