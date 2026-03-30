@@ -132,5 +132,5 @@ def load_pinn_model():
 def load_pinn_scaler():
     """Re-derive the StandardScaler by running the PINN preprocessing pipeline."""
     from pinn.preprocess import load_and_preprocess
-    _, _, scaler = load_and_preprocess(str(DATA_PATH))
+    _, _, scaler = load_and_preprocess(str(DATA_PATH), include_zeta=True)
     return scaler
