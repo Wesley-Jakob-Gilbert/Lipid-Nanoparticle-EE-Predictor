@@ -1,0 +1,58 @@
+{
+  "cv_mode": "groupkfold",
+  "n_folds": 5,
+  "n_samples": 93,
+  "n_groups": 7,
+  "epochs_per_fold": 200,
+  "alpha": 0.3,
+  "lr": 0.001,
+  "hidden_dim": 128,
+  "n_residual": 3,
+  "oof_metrics": {
+    "rmse_pct": 11.25,
+    "r2": 0.438,
+    "mae_pct": 8.65
+  },
+  "fold_metrics": [
+    {
+      "fold": 1,
+      "rmse_pct": 13.25,
+      "r2": -0.057,
+      "mae_pct": 11.07,
+      "n_train": 63,
+      "n_val": 30
+    },
+    {
+      "fold": 2,
+      "rmse_pct": 6.14,
+      "r2": 0.06,
+      "mae_pct": 4.73,
+      "n_train": 69,
+      "n_val": 24
+    },
+    {
+      "fold": 3,
+      "rmse_pct": 13.9,
+      "r2": -0.921,
+      "mae_pct": 10.98,
+      "n_train": 70,
+      "n_val": 23
+    },
+    {
+      "fold": 4,
+      "rmse_pct": 3.96,
+      "r2": -2.226,
+      "mae_pct": 3.72,
+      "n_train": 85,
+      "n_val": 8
+    },
+    {
+      "fold": 5,
+      "rmse_pct": 11.38,
+      "r2": 0.446,
+      "mae_pct": 9.62,
+      "n_train": 85,
+      "n_val": 8
+    }
+  ]
+}

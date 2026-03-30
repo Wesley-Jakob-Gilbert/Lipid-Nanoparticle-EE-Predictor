@@ -1,0 +1,11 @@
+{
+  "n_samples": 93,
+  "train_samples": 74,
+  "val_samples": 19,
+  "train_r2": 0.9925,
+  "train_rmse_pct": 1.28,
+  "val_r2": 0.5803,
+  "val_rmse_pct": 10.12,
+  "alpha_physics": 0.3,
+  "epochs": 300
+}

@@ -1,0 +1,11 @@
+{
+  "n_train": 72,
+  "n_val": 18,
+  "n_features": 7,
+  "val_r2": 0.6767008304595947,
+  "val_rmse": 8.709229442966489,
+  "val_mae": 7.088964462280273,
+  "alpha": 0.3,
+  "epochs": 300,
+  "note": "PINN trained on physicochemical features only (7 features). Physics residuals: N/P monotonicity (R1), Gibbs free energy mixing (R2), boundary condition EE\u21920 at large size (R3). Val R\u00b2 reflects generalization on held-out 20% random split."
+}
