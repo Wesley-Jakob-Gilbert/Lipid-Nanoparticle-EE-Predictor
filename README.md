@@ -6,6 +6,8 @@ Trained on the open-source [LNP Atlas](https://lnp-atlas.kisti.re.kr/) dataset â
 
 **Status:** Active development. XGBoost baseline and PINN complete with unified GroupKFold evaluation. Expanding PINN dataset and adding API endpoint planned.
 
+**[Live demo â†’](https://lipid-nanoparticle-ee-predictor.streamlit.app/)**
+
 ---
 
 ## Motivation
