@@ -1,11 +1,13 @@
 """
-train_pinn.py — Train the Physics-Informed Neural Network (PINN) for LNP EE prediction.
+train_pinn.py — Legacy PINN training entry point (random 80/20 split).
 
-Uses the same feature engineering pipeline as train.py (features.py) but feeds into
-the PINN architecture (pinn/model.py) with physics-constrained loss (pinn/physics.py).
+NOTE: This script uses a random train/val split and produces an optimistic R² (~0.58)
+that does not account for paper-level data leakage. The results reported in the README
+use GroupKFold on paper_doi. For the canonical evaluation, use pinn/train.py directly:
 
-Usage (from project root):
-    python3 src/train_pinn.py
+    python -m pinn.train --data data/lnp_atlas_cleaned.csv --cv groupkfold --epochs 300 --alpha 0.3 --out artifacts/pinn
+
+This entry point is retained for quick iteration only.
 
 Outputs (saved to artifacts/pinn/):
     best_model.pt         — best checkpoint (lowest val MSE)

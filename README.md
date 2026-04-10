@@ -20,11 +20,13 @@ The central challenge is data. Published LNP literature is heterogeneous — dif
 
 | Model | OOF R² | OOF RMSE | Rows | Features | CV Strategy | Notes |
 |---|---|---|---|---|---|---|
-| XGBoost | -0.032 | 21.88% | 636 | 78 | GroupKFold (paper DOI) | Honest cross-paper generalization |
+| XGBoost | -0.032 | 21.88% | 636 | 88 | GroupKFold (paper DOI) | Honest cross-paper generalization |
 | PINN (7-feat, GroupKFold) | 0.438 | 11.25% | 93 | 7 | GroupKFold (paper DOI) | Physics residuals R1–R3 |
 | PINN (7-feat, random split) | 0.580 | 10.12% | 93 | 7 | Random 80/20 | Optimistic — paper leakage possible |
 
-> **Data update (March 2026):** Dataset expanded from 523 → 636 rows by fixing 174 rows with corrupt ± encoding and parsing ~XX / range / dual-assay EE values. 6 broken cKK-E12 SMILES corrected via PubChem (CID 71555845). 32 DSPE-2armPEG2000 SMILES nulled due to valence error (falls back to frequency encoding). Cleaned data saved as `data/lnp_atlas_cleaned.csv`.
+> **Data update (March 2026):** Dataset expanded from 523 → 636 rows by fixing 174 rows with corrupt ± encoding and parsing range-formatted and dual-assay EE values. 6 broken cKK-E12 SMILES corrected via PubChem (CID 71555845). 32 DSPE-2armPEG2000 SMILES nulled due to valence error (falls back to frequency encoding). Cleaned data saved as `data/lnp_atlas_cleaned.csv`.
+
+![Streamlit Dashboard](docs/dashboard_screenshot.png)
 
 ### Why does XGBoost R² drop from 0.136 to -0.032?
 
@@ -34,7 +36,7 @@ Both the XGBoost and PINN results reveal the same fundamental challenge: **cross
 
 - Within-paper EE variance ≈ between-paper EE variance (both ~0.02 in fraction units)
 - ~50% of EE variance is explained by unmeasured paper-level confounders: measurement protocol (RiboGreen vs. SpectraMax), buffer composition, operator technique, and lipid lot variability
-- The 78 physicochemical formulation features don't uniquely identify experimental conditions across labs
+- The 88 physicochemical formulation features don't uniquely identify experimental conditions across labs
 
 This is not a model failure — it is a fundamental data limitation that would affect any ML approach trained on this dataset. **The PINN's physics priors provide meaningful benefit** (OOF RMSE 11.25% vs 21.88% for XGBoost) by constraining predictions to physically plausible regions even when data signal is weak.
 
@@ -46,15 +48,13 @@ Both models are evaluated under **GroupKFold on `paper_doi`** — the hardest an
 
 ---
 
----
-
 ## Models
 
 ### XGBoost Baseline
 
 The baseline model applies gradient boosting to a rich feature representation of the LNP formulation.
 
-- **523 rows** with EE% from the LNP Atlas; **76 features** spanning:
+- **636 rows** with EE% from the LNP Atlas; **88 features** spanning:
   - RDKit molecular descriptors (MW, LogP, TPSA, rotatable bonds, H-bond donors/acceptors) for each of four lipid components
   - Molar ratio parsing from strings such as `"50:1.5:38.5:10"`
   - Synthesis conditions extracted from free text (flow rate, flow ratio, buffer pH)
@@ -115,7 +115,7 @@ Each ResidualBlock: `LayerNorm -> Linear -> GELU -> Linear`, with a skip connect
 ```
 lnp-ee-predictor/
 |-- src/
-|   |-- features.py       # Feature engineering pipeline (76 features)
+|   |-- features.py       # Feature engineering pipeline (88 features)
 |   |-- train.py          # XGBoost: Optuna + GroupKFold + SHAP
 |   `-- train_pinn.py     # Entry point for PINN training
 |-- pinn/
@@ -155,9 +155,11 @@ python src/train.py
 ### Train PINN
 
 ```bash
+# Recommended: GroupKFold evaluation (results reported in README)
+python -m pinn.train --data data/lnp_atlas_cleaned.csv --cv groupkfold --epochs 300 --alpha 0.3 --out artifacts/pinn
+
+# Quick run (random 80/20 split, optimistic R²):
 python src/train_pinn.py
-# or directly:
-python -m pinn.train --data data/lnp_atlas_export.csv --epochs 300 --alpha 0.3 --out artifacts/pinn
 ```
 
 ### Run the API
@@ -245,7 +247,7 @@ curl -X POST http://localhost:8000/predict \
 
 If you use this code or the underlying dataset, please cite the LNP Atlas:
 
-> Song Seunghun, Baek Jueun, Sangjae Seo* "LNP Atlas: A Comprehensive Dataset of Lipid Nanoparticle Compositions and Properties for Nucleic Acid Delivery." *Nature Nanotechnology* (2025). https://www.nature.com/articles/s41597-025-06456-w
+> Song, S., Baek, J., & Seo, S. "LNP Atlas: A Comprehensive Dataset of Lipid Nanoparticle Compositions and Properties for Nucleic Acid Delivery." *Nature Nanotechnology* (2025). https://www.nature.com/articles/s41597-025-06456-w
 
 Physics residual references:
 
