@@ -24,7 +24,7 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
+import jax.numpy as jnp
 import torch
 import torch.nn as nn
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
@@ -137,7 +137,7 @@ def eval_epoch(model: nn.Module, loader: DataLoader, device: str) -> dict:
 
 
 @torch.no_grad()
-def predict(model: nn.Module, X: np.ndarray, device: str) -> np.ndarray:
+def predict(model: nn.Module, X: jnp.ndarray, device: str) -> jnp.ndarray:
     """Run inference and return predictions as numpy array."""
     model.eval()
     X_t = torch.tensor(X, dtype=torch.float32).to(device)
@@ -152,22 +152,22 @@ def run_groupkfold(X_raw, y, groups, args, device):
     """
     n_features = X_raw.shape[1]
     gkf = GroupKFold(n_splits=args.n_folds)
-    oof_preds = np.zeros(len(y), dtype=np.float32)
+    oof_preds = jnp.zeros(len(y), dtype=jnp.float32)
     fold_metrics = []
 
-    n_groups = len(np.unique(groups))
+    n_groups = len(jnp.unique(groups))
     print(f"[PINN] GroupKFold: {args.n_folds} folds | {len(y)} samples | {n_groups} paper groups")
     print(f"[PINN] Training {args.epochs} epochs per fold (alpha={args.alpha})\n")
 
     for fold, (train_idx, val_idx) in enumerate(gkf.split(X_raw, y, groups)):
         # Reproducible per-fold seeding
         torch.manual_seed(args.seed + fold)
-        np.random.seed(args.seed + fold)
+        jnp.random.seed(args.seed + fold)
 
         # Fit scaler on training fold only
         scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_raw[train_idx]).astype(np.float32)
-        X_val = scaler.transform(X_raw[val_idx]).astype(np.float32)
+        X_train = scaler.fit_transform(X_raw[train_idx]).astype(jnp.float32)
+        X_val = scaler.transform(X_raw[val_idx]).astype(jnp.float32)
         y_train = y[train_idx]
         y_val = y[val_idx]
 
@@ -205,7 +205,7 @@ def run_groupkfold(X_raw, y, groups, args, device):
         # Per-fold metrics in EE% space
         y_val_pct = y_val * 100.0
         val_preds_pct = val_preds * 100.0
-        fold_rmse = float(np.sqrt(mean_squared_error(y_val_pct, val_preds_pct)))
+        fold_rmse = float(jnp.sqrt(mean_squared_error(y_val_pct, val_preds_pct)))
         fold_r2 = float(r2_score(y_val_pct, val_preds_pct))
         fold_mae = float(mean_absolute_error(y_val_pct, val_preds_pct))
 
@@ -223,7 +223,7 @@ def run_groupkfold(X_raw, y, groups, args, device):
     # Aggregate OOF metrics
     y_pct = y * 100.0
     oof_pct = oof_preds * 100.0
-    oof_rmse = float(np.sqrt(mean_squared_error(y_pct, oof_pct)))
+    oof_rmse = float(jnp.sqrt(mean_squared_error(y_pct, oof_pct)))
     oof_r2 = float(r2_score(y_pct, oof_pct))
     oof_mae = float(mean_absolute_error(y_pct, oof_pct))
 
@@ -252,7 +252,7 @@ def main():
     args = parse_args()
     device = get_device(args.device)
     torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    jnp.random.seed(args.seed)
 
     print(f"[PINN] Device: {device}")
     print(f"[PINN] Loading data: {args.data}")
@@ -275,7 +275,7 @@ def main():
 
     # Train / val split (80/20)
     split = int(0.8 * len(y))
-    idx = np.random.permutation(len(y))
+    idx = jnp.random.permutation(len(y))
     train_idx, val_idx = idx[:split], idx[split:]
 
     X_train = torch.tensor(X[train_idx], dtype=torch.float32)
