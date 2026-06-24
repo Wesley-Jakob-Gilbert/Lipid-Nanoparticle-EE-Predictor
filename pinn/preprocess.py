@@ -106,34 +106,25 @@ def _parse_ee_robust(val):
 
 # ─── Main loader ──────────────────────────────────────────────────────────────
 
-def load_and_preprocess(
+def _load_core(
     csv_path: str,
     include_zeta: bool = False,
-    **kwargs,
-) -> Tuple[jnp.ndarray, jnp.ndarray, StandardScaler]:
-    """
-    Load CSV, engineer features, standardize.
-
-    Args:
-        csv_path:     Path to lnp_atlas_cleaned.csv or lnp_atlas_export.csv
-        include_zeta: If True, include zeta_mv as a feature (fewer rows).
-                      Default False (recommended — 3x more data).
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
+    """Shared data loading and feature engineering.
 
     Returns:
-        X:      Standardized feature array, shape (N, n_features).
-        y:      EE targets in [0, 1], shape (N,).
-        scaler: Fitted StandardScaler.
+        feat:      DataFrame with feat_cols + ["ee"], NaN rows dropped.
+        df:        Original full DataFrame (index aligned with feat).
+        feat_cols: List of feature column names used.
     """
     df = pd.read_csv(csv_path, encoding="latin-1", low_memory=False)
 
-    # Use pre-cleaned EE column if available, else parse raw
     if "encapsulation_efficiency_clean" in df.columns:
         ee_vals = pd.to_numeric(df["encapsulation_efficiency_clean"], errors="coerce")
     else:
         ee_vals = df["encapsulation_efficiency_percent_std"].apply(_parse_ee_robust)
         ee_vals = pd.to_numeric(ee_vals, errors="coerce")
 
-    # Parse molar ratios
     ratios = df["lipid_molar_ratio"].apply(_parse_molar_ratio)
     ratio_df = pd.DataFrame(
         ratios.tolist(),
@@ -143,7 +134,7 @@ def load_and_preprocess(
 
     feat = pd.DataFrame(index=df.index)
     feat["ionizable_lipid_mole_fraction"] = ratio_df["il_frac"]
-    feat["jnp_ratio"] = feat["ionizable_lipid_mole_fraction"] * 10.0
+    feat["np_ratio"] = feat["ionizable_lipid_mole_fraction"] * 10.0
     feat["particle_size_nm"] = _clean_numeric(df["particle_size_nm_std"])
     feat["pdi"] = _clean_numeric(df["pdi_std"])
     if include_zeta:
@@ -158,6 +149,23 @@ def load_and_preprocess(
     if len(feat) < 10:
         raise ValueError(f"Only {len(feat)} valid rows — check CSV path and columns.")
 
+    return feat, df, feat_cols
+
+
+def load_and_preprocess(
+    csv_path: str,
+    include_zeta: bool = False,
+    **kwargs,
+) -> Tuple[jnp.ndarray, jnp.ndarray, StandardScaler]:
+    """Load CSV, engineer features, standardize.
+
+    Returns:
+        X:      Standardized feature array, shape (N, n_features).
+        y:      EE targets in [0, 1], shape (N,).
+        scaler: Fitted StandardScaler.
+    """
+    feat, _, feat_cols = _load_core(csv_path, include_zeta)
+
     X_raw = feat[feat_cols].values.astype(jnp.float32)
     y = feat["ee"].values.astype(jnp.float32)
 
@@ -168,4 +176,32 @@ def load_and_preprocess(
     print(f"[preprocess] {len(y)} rows | {len(feat_cols)} features ({zeta_note}) | "
           f"EE mean={y.mean():.3f} std={y.std():.3f}")
     return X, y, scaler
+
+
+def load_and_preprocess_with_groups(
+    csv_path: str,
+    include_zeta: bool = False,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Load CSV and return unscaled features with paper_doi group IDs.
+
+    Returns unscaled X so the caller can fit a scaler per CV fold (prevents leakage).
+
+    Returns:
+        X_raw:  Unscaled feature array, shape (N, n_features).
+        y:      EE targets in [0, 1], shape (N,).
+        groups: Integer-encoded paper_doi, shape (N,).
+    """
+    feat, df, feat_cols = _load_core(csv_path, include_zeta)
+
+    X_raw = feat[feat_cols].values.astype(jnp.float32)
+    y = feat["ee"].values.astype(jnp.float32)
+
+    doi_col = df.loc[feat.index, "paper_doi"].fillna("unknown")
+    unique_dois = {doi: i for i, doi in enumerate(doi_col.unique())}
+    groups = doi_col.map(unique_dois).values.astype(jnp.int64)
+
+    zeta_note = "with zeta" if include_zeta else "no zeta"
+    print(f"[preprocess] {len(y)} rows | {len(feat_cols)} features ({zeta_note}) | "
+          f"{len(unique_dois)} paper groups | EE mean={y.mean():.3f} std={y.std():.3f}")
+    return X_raw, y, groups
 
