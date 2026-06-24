@@ -13,7 +13,7 @@ import re
 import warnings
 from typing import Tuple, List
 
-import numpy as np
+import jax.numpy as jnp
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
@@ -50,13 +50,13 @@ def _parse_molar_ratio(ratio_str):
     try:
         parts = [float(x) for x in str(ratio_str).split(":")]
         if len(parts) != 4:
-            return (np.nan,) * 4
+            return (jnp.nan,) * 4
         total = sum(parts)
         if total == 0:
-            return (np.nan,) * 4
+            return (jnp.nan,) * 4
         return tuple(p / total for p in parts)
     except (ValueError, AttributeError):
-        return (np.nan,) * 4
+        return (jnp.nan,) * 4
 
 
 def _clean_numeric(series):
@@ -110,7 +110,7 @@ def load_and_preprocess(
     csv_path: str,
     include_zeta: bool = False,
     **kwargs,
-) -> Tuple[np.ndarray, np.ndarray, StandardScaler]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, StandardScaler]:
     """
     Load CSV, engineer features, standardize.
 
@@ -143,14 +143,14 @@ def load_and_preprocess(
 
     feat = pd.DataFrame(index=df.index)
     feat["ionizable_lipid_mole_fraction"] = ratio_df["il_frac"]
-    feat["np_ratio"] = feat["ionizable_lipid_mole_fraction"] * 10.0
+    feat["jnp_ratio"] = feat["ionizable_lipid_mole_fraction"] * 10.0
     feat["particle_size_nm"] = _clean_numeric(df["particle_size_nm_std"])
     feat["pdi"] = _clean_numeric(df["pdi_std"])
     if include_zeta:
         feat["zeta_mv"] = _clean_numeric(df["zeta_potential_mv_std"])
     feat["peg_fraction"] = ratio_df["peg_frac"]
     feat["cholesterol_fraction"] = ratio_df["chol_frac"]
-    feat["ee"] = np.clip(ee_vals / 100.0, 0.0, 1.0)
+    feat["ee"] = jnp.clip(ee_vals / 100.0, 0.0, 1.0)
 
     feat_cols = FEATURE_COLS_WITH_ZETA if include_zeta else FEATURE_COLS
     feat = feat[feat_cols + ["ee"]].dropna()
@@ -158,11 +158,11 @@ def load_and_preprocess(
     if len(feat) < 10:
         raise ValueError(f"Only {len(feat)} valid rows — check CSV path and columns.")
 
-    X_raw = feat[feat_cols].values.astype(np.float32)
-    y = feat["ee"].values.astype(np.float32)
+    X_raw = feat[feat_cols].values.astype(jnp.float32)
+    y = feat["ee"].values.astype(jnp.float32)
 
     scaler = StandardScaler()
-    X = scaler.fit_transform(X_raw).astype(np.float32)
+    X = scaler.fit_transform(X_raw).astype(jnp.float32)
 
     zeta_note = "with zeta" if include_zeta else "no zeta"
     print(f"[preprocess] {len(y)} rows | {len(feat_cols)} features ({zeta_note}) | "
