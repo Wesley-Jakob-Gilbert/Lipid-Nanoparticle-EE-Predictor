@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import jax.numpy as jnp
+from jax import random
 import torch
 import torch.nn as nn
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
@@ -162,7 +163,7 @@ def run_groupkfold(X_raw, y, groups, args, device):
     for fold, (train_idx, val_idx) in enumerate(gkf.split(X_raw, y, groups)):
         # Reproducible per-fold seeding
         torch.manual_seed(args.seed + fold)
-        jnp.random.seed(args.seed + fold)
+        #random.seed(args.seed + fold)
 
         # Fit scaler on training fold only
         scaler = StandardScaler()
@@ -252,7 +253,7 @@ def main():
     args = parse_args()
     device = get_device(args.device)
     torch.manual_seed(args.seed)
-    jnp.random.seed(args.seed)
+    #random.seed(args.seed)
 
     print(f"[PINN] Device: {device}")
     print(f"[PINN] Loading data: {args.data}")
@@ -275,7 +276,8 @@ def main():
 
     # Train / val split (80/20)
     split = int(0.8 * len(y))
-    idx = jnp.random.permutation(len(y))
+    key = random.key(args.seed)
+    idx = random.permutation(key, len(y))
     train_idx, val_idx = idx[:split], idx[split:]
 
     X_train = torch.tensor(X[train_idx], dtype=torch.float32)
