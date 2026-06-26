@@ -141,7 +141,7 @@ def _load_core(
         feat["zeta_mv"] = _clean_numeric(df["zeta_potential_mv_std"])
     feat["peg_fraction"] = ratio_df["peg_frac"]
     feat["cholesterol_fraction"] = ratio_df["chol_frac"]
-    feat["ee"] = jnp.clip(ee_vals / 100.0, 0.0, 1.0)
+    feat["ee"] = jnp.clip(ee_vals.values / 100.0, 0.0, 1.0)
 
     feat_cols = FEATURE_COLS_WITH_ZETA if include_zeta else FEATURE_COLS
     feat = feat[feat_cols + ["ee"]].dropna()
