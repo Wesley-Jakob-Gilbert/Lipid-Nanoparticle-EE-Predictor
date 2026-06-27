@@ -11,6 +11,9 @@ rdkit>=2022.9.1
 
 # PINN (Physics-Informed Neural Network)
 torch>=2.0.0
+jax[cpu]>=0.4.30
+flax>=0.8.0
+optax>=0.2.0
 
 # API
 fastapi>=0.111.0

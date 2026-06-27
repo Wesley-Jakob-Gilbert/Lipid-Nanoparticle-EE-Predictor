@@ -14,7 +14,6 @@ Input features (normalized, continuous):
     - np_ratio                       (N/P, derived from lipid/cargo charge)
     - particle_size_nm               (DLS Z-average)
     - pdi                            (polydispersity index)
-    - zeta_mv                        (surface charge, mV)
     - peg_fraction                   (PEG-lipid mole fraction)
     - cholesterol_fraction           (cholesterol mole fraction)
 
@@ -22,28 +21,25 @@ Output:
     - ee_pred: predicted encapsulation efficiency ∈ [0, 1]
 """
 
-import torch
-import torch.nn as nn
-from typing import List
+import jax
+import jax.numpy as jnp
+import flax.linen as nn
 
 
 class ResidualBlock(nn.Module):
     """Two-layer residual block with LayerNorm and GELU activation."""
+    hidden_dim: int
+    dropout: float = 0.1
 
-    def __init__(self, hidden_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-        )
-        self.activation = nn.GELU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.activation(x + self.block(x))
+    @nn.compact
+    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
+        h = nn.Dense(self.hidden_dim)(x)
+        h = nn.LayerNorm()(h)
+        h = nn.gelu(h)
+        h = nn.Dropout(self.dropout)(h, deterministic=not training)
+        h = nn.Dense(self.hidden_dim)(h)
+        h = nn.LayerNorm()(h)
+        return nn.gelu(x + h)
 
 
 class EEPredictor(nn.Module):
@@ -57,55 +53,35 @@ class EEPredictor(nn.Module):
         dropout:     Dropout probability (default 0.1).
 
     Example:
-        >>> model = EEPredictor(n_features=7)
-        >>> x = torch.randn(16, 7)
-        >>> ee = model(x)   # shape (16, 1), values in [0, 1]
+        >>> model = EEPredictor(n_features=6)
+        >>> key = jax.random.PRNGKey(0)
+        >>> x = jax.random.normal(key, (16, 6))
+        >>> params = model.init(key, x)['params']
+        >>> ee = model.apply({'params': params}, x)   # shape (16, 1), values in [0, 1]
     """
+    n_features: int = 6
+    hidden_dim: int = 128
+    n_residual: int = 3
+    dropout: float = 0.1
 
-    def __init__(
-        self,
-        n_features: int = 7,
-        hidden_dim: int = 128,
-        n_residual: int = 3,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-
+    @nn.compact
+    def __call__(self, x: jax.Array, training: bool = True) -> jax.Array:
         # Input projection
-        self.input_proj = nn.Sequential(
-            nn.Linear(n_features, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-        )
+        h = nn.Dense(self.hidden_dim)(x)
+        h = nn.LayerNorm()(h)
+        h = nn.gelu(h)
 
         # Residual trunk
-        self.res_blocks = nn.ModuleList(
-            [ResidualBlock(hidden_dim, dropout) for _ in range(n_residual)]
-        )
+        for _ in range(self.n_residual):
+            h = ResidualBlock(self.hidden_dim, self.dropout)(h, training)
 
         # Output head: predict EE ∈ [0, 1]
-        self.output_head = nn.Sequential(
-            nn.Linear(hidden_dim, 32),
-            nn.GELU(),
-            nn.Linear(32, 1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Feature tensor of shape (B, n_features).
-
-        Returns:
-            ee_pred: Predicted EE, shape (B, 1), values in [0, 1].
-        """
-        h = self.input_proj(x)
-        for block in self.res_blocks:
-            h = block(h)
-        return self.output_head(h)
+        h = nn.Dense(32)(h)
+        h = nn.gelu(h)
+        h = nn.Dense(1)(h)
+        return nn.sigmoid(h)
 
 
-def build_model(n_features: int = 7, device: str = "cpu") -> EEPredictor:
-    """Convenience constructor. Returns model on specified device."""
-    model = EEPredictor(n_features=n_features)
-    return model.to(device)
+def build_model(n_features: int = 6) -> EEPredictor:
+    """Convenience constructor."""
+    return EEPredictor(n_features=n_features)

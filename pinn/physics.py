@@ -26,8 +26,8 @@ References:
     - Jayaraman et al., Angew. Chem. 2012 (lipid mixing and phase behavior)
 """
 
-import torch
-import torch.nn as nn
+import jax
+import jax.numpy as jnp
 
 
 # ─── Physical constants ────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ R = 8.314e-3  # kJ / (mol·K)
 T = 310.15    # K (physiological temperature, 37°C)
 
 
-def delta_g_mixing(x_il: torch.Tensor) -> torch.Tensor:
+def delta_g_mixing(x_il: jax.Array) -> jax.Array:
     """
     Ideal Gibbs free energy of mixing for a binary lipid mixture.
 
@@ -47,12 +47,12 @@ def delta_g_mixing(x_il: torch.Tensor) -> torch.Tensor:
     Returns:
         Dimensionless ΔG_mix / RT, same shape as x_il.
     """
-    eps = 1e-7  # numerical guard against log(0)
-    x = torch.clamp(x_il, eps, 1.0 - eps)
-    return x * torch.log(x) + (1.0 - x) * torch.log(1.0 - x)
+    eps = 1e-7
+    x = jnp.clip(x_il, eps, 1.0 - eps)
+    return x * jnp.log(x) + (1.0 - x) * jnp.log(1.0 - x)
 
 
-def d_delta_g_mixing_dx(x_il: torch.Tensor) -> torch.Tensor:
+def d_delta_g_mixing_dx(x_il: jax.Array) -> jax.Array:
     """
     Analytical derivative of ΔG_mix w.r.t. x_il.
 
@@ -62,16 +62,17 @@ def d_delta_g_mixing_dx(x_il: torch.Tensor) -> torch.Tensor:
     raises (positive) mixing free energy.
     """
     eps = 1e-7
-    x = torch.clamp(x_il, eps, 1.0 - eps)
-    return torch.log(x) - torch.log(1.0 - x)
+    x = jnp.clip(x_il, eps, 1.0 - eps)
+    return jnp.log(x) - jnp.log(1.0 - x)
 
 
 def residual_np_monotonicity(
-    model: nn.Module,
-    x_batch: torch.Tensor,
+    model,
+    params,
+    x_batch: jax.Array,
     np_col: int,
     np_opt: float = 6.0,
-) -> torch.Tensor:
+) -> jax.Array:
     """
     R1: EE should increase with N/P ratio below the optimal N/P.
 
@@ -79,36 +80,31 @@ def residual_np_monotonicity(
 
     Args:
         model:    The PINN (EEPredictor).
-        x_batch:  Feature batch, shape (B, n_features). Requires grad.
+        params:   Model parameters pytree.
+        x_batch:  Feature batch, shape (B, n_features).
         np_col:   Column index of the N/P ratio feature.
         np_opt:   Optimal N/P threshold (default 6.0 per literature).
 
     Returns:
         Scalar residual loss.
     """
-    x = x_batch.clone().requires_grad_(True)
-    ee_pred = model(x)                             # (B, 1)
-    grad = torch.autograd.grad(
-        outputs=ee_pred.sum(),
-        inputs=x,
-        create_graph=True,
-    )[0]                                           # (B, n_features)
-    d_ee_d_np = grad[:, np_col]                   # (B,)
+    def ee_sum(x):
+        return model.apply({'params': params}, x, training=False).sum()
 
-    # Mask: only penalize where NP is below optimum
-    np_vals = x_batch[:, np_col].detach()
-    mask = (np_vals < np_opt).float()
+    grad = jax.grad(ee_sum)(x_batch)          # (B, n_features)
+    d_ee_d_np = grad[:, np_col]               # (B,)
 
-    # Penalty: ReLU penalizes negative gradient (should be positive)
-    penalty = torch.relu(-d_ee_d_np) * mask
-    return penalty.mean()
+    np_vals = x_batch[:, np_col]
+    mask = (np_vals < np_opt).astype(jnp.float32)
+    return (jax.nn.relu(-d_ee_d_np) * mask).mean()
 
 
 def residual_thermodynamic_mixing(
-    model: nn.Module,
-    x_batch: torch.Tensor,
+    model,
+    params,
+    x_batch: jax.Array,
     x_il_col: int,
-) -> torch.Tensor:
+) -> jax.Array:
     """
     R2: Sign of ∂EE/∂x_il should agree with -d(ΔG_mix)/dx_il.
 
@@ -118,36 +114,31 @@ def residual_thermodynamic_mixing(
 
     Args:
         model:     The PINN (EEPredictor).
-        x_batch:   Feature batch, shape (B, n_features). Requires grad.
+        params:    Model parameters pytree.
+        x_batch:   Feature batch, shape (B, n_features).
         x_il_col:  Column index of the ionizable lipid mole fraction feature.
 
     Returns:
         Scalar residual loss.
     """
-    x = x_batch.clone().requires_grad_(True)
-    ee_pred = model(x)
-    grad = torch.autograd.grad(
-        outputs=ee_pred.sum(),
-        inputs=x,
-        create_graph=True,
-    )[0]
+    def ee_sum(x):
+        return model.apply({'params': params}, x, training=False).sum()
+
+    grad = jax.grad(ee_sum)(x_batch)
     d_ee_d_xil = grad[:, x_il_col]
 
-    x_il_vals = x_batch[:, x_il_col].detach()
-    phys_sign = -d_delta_g_mixing_dx(x_il_vals)  # expected sign of dEE/dx_il
-
-    # Penalty: sign disagreement
-    sign_disagreement = torch.relu(-d_ee_d_xil * phys_sign)
-    return sign_disagreement.mean()
+    x_il_vals = x_batch[:, x_il_col]
+    phys_sign = -d_delta_g_mixing_dx(x_il_vals)
+    return jax.nn.relu(-d_ee_d_xil * phys_sign).mean()
 
 
 def residual_boundary_size(
-    model: nn.Module,
+    model,
+    params,
     size_col: int,
     n_features: int,
-    large_size: float = 10.0,  # normalized large-size value
-    device: str = "cpu",
-) -> torch.Tensor:
+    large_size: float = 10.0,
+) -> jax.Array:
     """
     R3: EE → 0 as particle size → ∞ (infinite dilution / poor self-assembly).
 
@@ -157,24 +148,24 @@ def residual_boundary_size(
 
     Args:
         model:      The PINN.
+        params:     Model parameters pytree.
         size_col:   Column index of the particle size feature (normalized).
         n_features: Total number of input features.
         large_size: Normalized value representing an unrealistically large particle.
-        device:     Torch device string.
 
     Returns:
         Scalar residual loss.
     """
-    x_boundary = torch.zeros(1, n_features, device=device)
-    x_boundary[0, size_col] = large_size
-    ee_boundary = model(x_boundary)
-    # EE should be near zero; penalize deviation from 0
-    return ee_boundary.pow(2).mean()
+    x_boundary = jnp.zeros((1, n_features))
+    x_boundary = x_boundary.at[0, size_col].set(large_size)
+    ee_boundary = model.apply({'params': params}, x_boundary, training=False)
+    return (ee_boundary ** 2).mean()
 
 
 def total_physics_loss(
-    model: nn.Module,
-    x_batch: torch.Tensor,
+    model,
+    params,
+    x_batch: jax.Array,
     np_col: int,
     x_il_col: int,
     size_col: int,
@@ -182,8 +173,7 @@ def total_physics_loss(
     lambda_np: float = 0.5,
     lambda_mix: float = 0.5,
     lambda_bc: float = 0.1,
-    device: str = "cpu",
-) -> torch.Tensor:
+) -> jax.Array:
     """
     Weighted sum of all physics residuals.
 
@@ -191,6 +181,7 @@ def total_physics_loss(
 
     Args:
         model:      EEPredictor instance.
+        params:     Model parameters pytree.
         x_batch:    Feature tensor (B, n_features).
         np_col:     Index of N/P ratio feature.
         x_il_col:   Index of ionizable lipid mole fraction feature.
@@ -199,12 +190,11 @@ def total_physics_loss(
         lambda_np:  Weight for N/P monotonicity residual.
         lambda_mix: Weight for thermodynamic mixing residual.
         lambda_bc:  Weight for boundary condition residual.
-        device:     Torch device string.
 
     Returns:
         Scalar total physics loss.
     """
-    r1 = residual_np_monotonicity(model, x_batch, np_col)
-    r2 = residual_thermodynamic_mixing(model, x_batch, x_il_col)
-    r3 = residual_boundary_size(model, size_col, n_features, device=device)
+    r1 = residual_np_monotonicity(model, params, x_batch, np_col)
+    r2 = residual_thermodynamic_mixing(model, params, x_batch, x_il_col)
+    r3 = residual_boundary_size(model, params, size_col, n_features)
     return lambda_np * r1 + lambda_mix * r2 + lambda_bc * r3

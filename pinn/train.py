@@ -21,17 +21,16 @@ Usage:
 
 import argparse
 import json
-import sys
+import pickle
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
+import optax
 from jax import random
-import torch
-import torch.nn as nn
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader, TensorDataset
 
 from .model import build_model
 from .physics import total_physics_loss
@@ -57,8 +56,6 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", type=str, default="outputs/pinn",
                    help="Output directory for checkpoints and metrics")
-    p.add_argument("--device", type=str, default="auto",
-                   help="'auto', 'cpu', or 'cuda'")
     p.add_argument("--cv", type=str, default="random",
                    choices=["random", "groupkfold"],
                    help="Validation strategy: 'random' (80/20) or 'groupkfold' (paper_doi)")
@@ -67,85 +64,27 @@ def parse_args():
     return p.parse_args()
 
 
-def get_device(device_str: str) -> str:
-    if device_str == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    return device_str
+def batch_iter(X, y, batch_size, key):
+    """Yield shuffled mini-batches as JAX arrays."""
+    n = len(y)
+    perm = random.permutation(key, n)
+    X_shuf, y_shuf = X[perm], y[perm]
+    for i in range(0, n, batch_size):
+        yield X_shuf[i:i + batch_size], y_shuf[i:i + batch_size]
 
 
-def train_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    alpha: float,
-    device: str,
-    n_features: int,
-) -> dict:
-    model.train()
-    total_loss = total_data = total_phys = 0.0
-
-    for x_batch, y_batch in loader:
-        x_batch = x_batch.to(device).requires_grad_(True)
-        y_batch = y_batch.to(device)
-
-        optimizer.zero_grad()
-
-        # --- Data loss ---
-        ee_pred = model(x_batch)
-        loss_data = nn.functional.mse_loss(ee_pred.squeeze(-1), y_batch)
-
-        # --- Physics loss ---
-        loss_phys = total_physics_loss(
-            model=model,
-            x_batch=x_batch,
-            np_col=FEATURE_INDEX["np_ratio"],
-            x_il_col=FEATURE_INDEX["ionizable_lipid_mole_fraction"],
-            size_col=FEATURE_INDEX["particle_size_nm"],
-            n_features=n_features,
-            device=device,
-        )
-
-        loss = loss_data + alpha * loss_phys
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-
-        total_loss += loss.item()
-        total_data += loss_data.item()
-        total_phys += loss_phys.item()
-
-    n = len(loader)
-    return {
-        "loss": total_loss / n,
-        "loss_data": total_data / n,
-        "loss_physics": total_phys / n,
-    }
-
-
-@torch.no_grad()
-def eval_epoch(model: nn.Module, loader: DataLoader, device: str) -> dict:
-    model.eval()
-    preds, targets = [], []
-    for x_batch, y_batch in loader:
-        ee_pred = model(x_batch.to(device)).squeeze(-1)
-        preds.append(ee_pred.cpu())
-        targets.append(y_batch)
-    preds = torch.cat(preds)
-    targets = torch.cat(targets)
-    mse = nn.functional.mse_loss(preds, targets).item()
-    mae = (preds - targets).abs().mean().item()
+def eval_epoch(model, params, X_val, y_val) -> dict:
+    ee_pred = model.apply({'params': params}, X_val, training=False).squeeze(-1)
+    mse = float(jnp.mean((ee_pred - y_val) ** 2))
+    mae = float(jnp.mean(jnp.abs(ee_pred - y_val)))
     return {"val_mse": mse, "val_mae": mae}
 
 
-@torch.no_grad()
-def predict(model: nn.Module, X: jnp.ndarray, device: str) -> jnp.ndarray:
-    """Run inference and return predictions as numpy array."""
-    model.eval()
-    X_t = torch.tensor(X, dtype=torch.float32).to(device)
-    return model(X_t).squeeze(-1).cpu().numpy()
+def predict(model, params, X) -> jax.Array:
+    return model.apply({'params': params}, X, training=False).squeeze(-1)
 
 
-def run_groupkfold(X_raw, y, groups, args, device):
+def run_groupkfold(X_raw, y, groups, args):
     """Run GroupKFold cross-validation on paper_doi groups.
 
     Trains a fresh model per fold with a per-fold scaler to prevent leakage.
@@ -153,58 +92,84 @@ def run_groupkfold(X_raw, y, groups, args, device):
     """
     n_features = X_raw.shape[1]
     gkf = GroupKFold(n_splits=args.n_folds)
-    oof_preds = jnp.zeros(len(y), dtype=jnp.float32)
-    fold_metrics = []
+    model = build_model(n_features=n_features)
 
-    n_groups = len(jnp.unique(groups))
+    np_col = FEATURE_INDEX["np_ratio"]
+    x_il_col = FEATURE_INDEX["ionizable_lipid_mole_fraction"]
+    size_col = FEATURE_INDEX["particle_size_nm"]
+
+    n_groups = int(jnp.unique(groups).shape[0])
     print(f"[PINN] GroupKFold: {args.n_folds} folds | {len(y)} samples | {n_groups} paper groups")
     print(f"[PINN] Training {args.epochs} epochs per fold (alpha={args.alpha})\n")
 
-    for fold, (train_idx, val_idx) in enumerate(gkf.split(X_raw, y, groups)):
-        # Reproducible per-fold seeding
-        torch.manual_seed(args.seed + fold)
-        #random.seed(args.seed + fold)
+    # Single optimizer shared across folds; opt_state is reset per fold
+    approx_steps = args.epochs * max(1, len(y) // args.batch_size)
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adamw(
+            optax.cosine_decay_schedule(args.lr, approx_steps),
+            weight_decay=1e-4,
+        ),
+    )
 
-        # Fit scaler on training fold only
+    def loss_fn(params, x_batch, y_batch, key):
+        dropout_key = random.fold_in(key, 0)
+        ee_pred = model.apply(
+            {'params': params}, x_batch, training=True,
+            rngs={'dropout': dropout_key},
+        )
+        loss_data = jnp.mean((ee_pred.squeeze(-1) - y_batch) ** 2)
+        loss_phys = total_physics_loss(
+            model, params, x_batch,
+            np_col=np_col, x_il_col=x_il_col,
+            size_col=size_col, n_features=n_features,
+        )
+        return loss_data + args.alpha * loss_phys, (loss_data, loss_phys)
+
+    @jax.jit
+    def train_step(params, opt_state, x_batch, y_batch, key):
+        (loss, (ld, lp)), grads = jax.value_and_grad(
+            loss_fn, has_aux=True
+        )(params, x_batch, y_batch, key)
+        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        return optax.apply_updates(params, updates), new_opt_state, loss, ld, lp
+
+    oof_preds = jnp.zeros(len(y), dtype=jnp.float32)
+    fold_metrics = []
+
+    for fold, (train_idx, val_idx) in enumerate(gkf.split(X_raw, y, groups)):
+        fold_key = random.PRNGKey(args.seed + fold)
+
         scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_raw[train_idx]).astype(jnp.float32)
-        X_val = scaler.transform(X_raw[val_idx]).astype(jnp.float32)
+        X_train = jnp.array(scaler.fit_transform(jnp.array(X_raw[train_idx])), dtype=jnp.float32)
+        X_val = jnp.array(scaler.transform(jnp.array(X_raw[val_idx])), dtype=jnp.float32)
         y_train = y[train_idx]
         y_val = y[val_idx]
 
-        train_loader = DataLoader(
-            TensorDataset(torch.tensor(X_train), torch.tensor(y_train)),
-            batch_size=args.batch_size, shuffle=True,
-        )
-        val_loader = DataLoader(
-            TensorDataset(torch.tensor(X_val), torch.tensor(y_val)),
-            batch_size=args.batch_size,
-        )
-
-        # Fresh model per fold
-        model = build_model(n_features=n_features, device=device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        fold_key, init_key = random.split(fold_key)
+        params = model.init(init_key, jnp.ones((1, n_features)))['params']
+        opt_state = optimizer.init(params)
 
         best_val_mse = float("inf")
-        best_state = None
+        best_params = params
 
         for epoch in range(1, args.epochs + 1):
-            train_epoch(model, train_loader, optimizer, args.alpha, device, n_features)
-            val_metrics = eval_epoch(model, val_loader, device)
-            scheduler.step()
+            fold_key, epoch_key = random.split(fold_key)
+            for x_batch, y_batch in batch_iter(X_train, y_train, args.batch_size, epoch_key):
+                fold_key, step_key = random.split(fold_key)
+                params, opt_state, _, _, _ = train_step(
+                    params, opt_state, x_batch, y_batch, step_key
+                )
 
+            val_metrics = eval_epoch(model, params, X_val, y_val)
             if val_metrics["val_mse"] < best_val_mse:
                 best_val_mse = val_metrics["val_mse"]
-                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                best_params = params
 
-        # Load best checkpoint, predict on validation set
-        model.load_state_dict(best_state)
-        val_preds = predict(model, X_val, device)
-        oof_preds[val_idx] = val_preds
+        val_preds = predict(model, best_params, X_val)
+        oof_preds = oof_preds.at[val_idx].set(val_preds)
 
-        # Per-fold metrics in EE% space
-        y_val_pct = y_val * 100.0
+        y_val_pct = jnp.array(y_val) * 100.0
         val_preds_pct = val_preds * 100.0
         fold_rmse = float(jnp.sqrt(mean_squared_error(y_val_pct, val_preds_pct)))
         fold_r2 = float(r2_score(y_val_pct, val_preds_pct))
@@ -215,14 +180,13 @@ def run_groupkfold(X_raw, y, groups, args, device):
             "rmse_pct": round(fold_rmse, 2),
             "r2": round(fold_r2, 3),
             "mae_pct": round(fold_mae, 2),
-            "n_train": len(train_idx),
-            "n_val": len(val_idx),
+            "n_train": int(len(train_idx)),
+            "n_val": int(len(val_idx)),
         })
         print(f"  Fold {fold+1}: RMSE={fold_rmse:.2f}% | R2={fold_r2:.3f} | "
               f"MAE={fold_mae:.2f}% | train={len(train_idx)} val={len(val_idx)}")
 
-    # Aggregate OOF metrics
-    y_pct = y * 100.0
+    y_pct = jnp.array(y) * 100.0
     oof_pct = oof_preds * 100.0
     oof_rmse = float(jnp.sqrt(mean_squared_error(y_pct, oof_pct)))
     oof_r2 = float(r2_score(y_pct, oof_pct))
@@ -233,8 +197,8 @@ def run_groupkfold(X_raw, y, groups, args, device):
     return {
         "cv_mode": "groupkfold",
         "n_folds": args.n_folds,
-        "n_samples": len(y),
-        "n_groups": int(n_groups),
+        "n_samples": int(len(y)),
+        "n_groups": n_groups,
         "epochs_per_fold": args.epochs,
         "alpha": args.alpha,
         "lr": args.lr,
@@ -251,16 +215,13 @@ def run_groupkfold(X_raw, y, groups, args, device):
 
 def main():
     args = parse_args()
-    device = get_device(args.device)
-    torch.manual_seed(args.seed)
-    #random.seed(args.seed)
+    key = random.PRNGKey(args.seed)
 
-    print(f"[PINN] Device: {device}")
     print(f"[PINN] Loading data: {args.data}")
 
     if args.cv == "groupkfold":
         X_raw, y, groups = load_and_preprocess_with_groups(args.data)
-        results = run_groupkfold(X_raw, y, groups, args, device)
+        results = run_groupkfold(X_raw, y, groups, args)
 
         out_dir = Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -274,69 +235,109 @@ def main():
     n_features = X.shape[1]
     print(f"[PINN] Samples: {len(y)} | Features: {n_features}")
 
-    # Train / val split (80/20)
+    key, split_key = random.split(key)
+    perm = random.permutation(split_key, len(y))
     split = int(0.8 * len(y))
-    key = random.key(args.seed)
-    idx = random.permutation(key, len(y))
-    train_idx, val_idx = idx[:split], idx[split:]
+    train_idx, val_idx = perm[:split], perm[split:]
 
-    X_train = torch.tensor(X[train_idx], dtype=torch.float32)
-    y_train = torch.tensor(y[train_idx], dtype=torch.float32)
-    X_val   = torch.tensor(X[val_idx],   dtype=torch.float32)
-    y_val   = torch.tensor(y[val_idx],   dtype=torch.float32)
+    X_train, y_train = X[train_idx], y[train_idx]
+    X_val, y_val = X[val_idx], y[val_idx]
 
-    train_loader = DataLoader(
-        TensorDataset(X_train, y_train),
-        batch_size=args.batch_size, shuffle=True
-    )
-    val_loader = DataLoader(
-        TensorDataset(X_val, y_val),
-        batch_size=args.batch_size
-    )
+    model = build_model(n_features=n_features)
+    key, init_key = random.split(key)
+    params = model.init(init_key, jnp.ones((1, n_features)))['params']
 
-    model = build_model(n_features=n_features, device=device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs
+    n_steps = args.epochs * max(1, len(X_train) // args.batch_size)
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adamw(
+            optax.cosine_decay_schedule(args.lr, n_steps),
+            weight_decay=1e-4,
+        ),
     )
+    opt_state = optimizer.init(params)
+
+    np_col = FEATURE_INDEX["np_ratio"]
+    x_il_col = FEATURE_INDEX["ionizable_lipid_mole_fraction"]
+    size_col = FEATURE_INDEX["particle_size_nm"]
+
+    def loss_fn(params, x_batch, y_batch, key):
+        dropout_key = random.fold_in(key, 0)
+        ee_pred = model.apply(
+            {'params': params}, x_batch, training=True,
+            rngs={'dropout': dropout_key},
+        )
+        loss_data = jnp.mean((ee_pred.squeeze(-1) - y_batch) ** 2)
+        loss_phys = total_physics_loss(
+            model, params, x_batch,
+            np_col=np_col, x_il_col=x_il_col,
+            size_col=size_col, n_features=n_features,
+        )
+        return loss_data + args.alpha * loss_phys, (loss_data, loss_phys)
+
+    @jax.jit
+    def train_step(params, opt_state, x_batch, y_batch, key):
+        (loss, (ld, lp)), grads = jax.value_and_grad(
+            loss_fn, has_aux=True
+        )(params, x_batch, y_batch, key)
+        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        return optax.apply_updates(params, updates), new_opt_state, loss, ld, lp
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     history = []
     best_val_mse = float("inf")
+    best_params = params
 
     print(f"[PINN] Training for {args.epochs} epochs (alpha={args.alpha})")
     for epoch in range(1, args.epochs + 1):
-        train_metrics = train_epoch(
-            model, train_loader, optimizer, args.alpha, device, n_features
-        )
-        val_metrics = eval_epoch(model, val_loader, device)
-        scheduler.step()
+        key, epoch_key = random.split(key)
+        total_loss = total_data = total_phys = 0.0
+        n_batches = 0
 
-        row = {"epoch": epoch, **train_metrics, **val_metrics}
-        history.append(row)
+        for x_batch, y_batch in batch_iter(X_train, y_train, args.batch_size, epoch_key):
+            key, step_key = random.split(key)
+            params, opt_state, loss, ld, lp = train_step(
+                params, opt_state, x_batch, y_batch, step_key
+            )
+            total_loss += float(loss)
+            total_data += float(ld)
+            total_phys += float(lp)
+            n_batches += 1
+
+        val_metrics = eval_epoch(model, params, X_val, y_val)
 
         if val_metrics["val_mse"] < best_val_mse:
             best_val_mse = val_metrics["val_mse"]
-            torch.save(model.state_dict(), out_dir / "best_model.pt")
+            best_params = params
+            with open(out_dir / "best_params.pkl", "wb") as f:
+                pickle.dump(best_params, f)
+
+        row = {
+            "epoch": epoch,
+            "loss": total_loss / max(1, n_batches),
+            "loss_data": total_data / max(1, n_batches),
+            "loss_physics": total_phys / max(1, n_batches),
+            **val_metrics,
+        }
+        history.append(row)
 
         if epoch % 20 == 0 or epoch == 1:
             print(
                 f"  Epoch {epoch:4d} | "
-                f"loss={train_metrics['loss']:.4f} "
-                f"(data={train_metrics['loss_data']:.4f}, "
-                f"phys={train_metrics['loss_physics']:.4f}) | "
+                f"loss={row['loss']:.4f} "
+                f"(data={row['loss_data']:.4f}, "
+                f"phys={row['loss_physics']:.4f}) | "
                 f"val_mse={val_metrics['val_mse']:.4f} "
                 f"val_mae={val_metrics['val_mae']:.4f}"
             )
 
-    # Save history
     with open(out_dir / "pinn_training_history.json", "w") as f:
         json.dump(history, f, indent=2)
 
     print(f"\n[PINN] Best val MSE: {best_val_mse:.4f}")
-    print(f"[PINN] Checkpoint: {out_dir / 'best_model.pt'}")
+    print(f"[PINN] Checkpoint: {out_dir / 'best_params.pkl'}")
     print(f"[PINN] History:    {out_dir / 'pinn_training_history.json'}")
 
 
