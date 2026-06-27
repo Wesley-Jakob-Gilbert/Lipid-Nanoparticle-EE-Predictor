@@ -22,6 +22,7 @@ Usage:
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -158,8 +159,10 @@ def run_groupkfold(X_raw, y, groups, args, device):
     n_groups = len(np.unique(groups))
     print(f"[PINN] GroupKFold: {args.n_folds} folds | {len(y)} samples | {n_groups} paper groups")
     print(f"[PINN] Training {args.epochs} epochs per fold (alpha={args.alpha})\n")
+    gkf_start = time.perf_counter()
 
     for fold, (train_idx, val_idx) in enumerate(gkf.split(X_raw, y, groups)):
+        fold_start = time.perf_counter()
         # Reproducible per-fold seeding
         torch.manual_seed(args.seed + fold)
         np.random.seed(args.seed + fold)
@@ -199,6 +202,9 @@ def run_groupkfold(X_raw, y, groups, args, device):
 
         # Load best checkpoint, predict on validation set
         model.load_state_dict(best_state)
+        if device == "cuda":
+            torch.cuda.synchronize()
+        fold_elapsed = time.perf_counter() - fold_start
         val_preds = predict(model, X_val, device)
         oof_preds[val_idx] = val_preds
 
@@ -211,6 +217,7 @@ def run_groupkfold(X_raw, y, groups, args, device):
 
         fold_metrics.append({
             "fold": fold + 1,
+            "fold_time_s": round(fold_elapsed, 2),
             "rmse_pct": round(fold_rmse, 2),
             "r2": round(fold_r2, 3),
             "mae_pct": round(fold_mae, 2),
@@ -227,7 +234,9 @@ def run_groupkfold(X_raw, y, groups, args, device):
     oof_r2 = float(r2_score(y_pct, oof_pct))
     oof_mae = float(mean_absolute_error(y_pct, oof_pct))
 
+    gkf_elapsed = time.perf_counter() - gkf_start
     print(f"\n  OOF RMSE: {oof_rmse:.2f}% | OOF R2: {oof_r2:.3f} | OOF MAE: {oof_mae:.2f}%")
+    print(f"[PINN] GroupKFold complete: {gkf_elapsed:.2f}s total | {gkf_elapsed / args.n_folds:.2f}s/fold avg")
 
     return {
         "cv_mode": "groupkfold",
@@ -245,6 +254,8 @@ def run_groupkfold(X_raw, y, groups, args, device):
             "mae_pct": round(oof_mae, 2),
         },
         "fold_metrics": fold_metrics,
+        "training_time_s": round(gkf_elapsed, 2),
+        "time_per_fold_s": round(gkf_elapsed / args.n_folds, 2),
     }
 
 
@@ -255,6 +266,8 @@ def main():
     np.random.seed(args.seed)
 
     print(f"[PINN] Device: {device}")
+    if device == "cuda":
+        print(f"[PINN] GPU: {torch.cuda.get_device_name(0)}")
     print(f"[PINN] Loading data: {args.data}")
 
     if args.cv == "groupkfold":
@@ -305,14 +318,19 @@ def main():
     best_val_mse = float("inf")
 
     print(f"[PINN] Training for {args.epochs} epochs (alpha={args.alpha})")
+    train_start = time.perf_counter()
     for epoch in range(1, args.epochs + 1):
+        epoch_start = time.perf_counter()
         train_metrics = train_epoch(
             model, train_loader, optimizer, args.alpha, device, n_features
         )
         val_metrics = eval_epoch(model, val_loader, device)
         scheduler.step()
+        if device == "cuda":
+            torch.cuda.synchronize()
+        epoch_elapsed = time.perf_counter() - epoch_start
 
-        row = {"epoch": epoch, **train_metrics, **val_metrics}
+        row = {"epoch": epoch, "epoch_time_s": round(epoch_elapsed, 4), **train_metrics, **val_metrics}
         history.append(row)
 
         if val_metrics["val_mse"] < best_val_mse:
@@ -322,12 +340,18 @@ def main():
         if epoch % 20 == 0 or epoch == 1:
             print(
                 f"  Epoch {epoch:4d} | "
+                f"time={epoch_elapsed:.3f}s | "
                 f"loss={train_metrics['loss']:.4f} "
                 f"(data={train_metrics['loss_data']:.4f}, "
                 f"phys={train_metrics['loss_physics']:.4f}) | "
                 f"val_mse={val_metrics['val_mse']:.4f} "
                 f"val_mae={val_metrics['val_mae']:.4f}"
             )
+
+    if device == "cuda":
+        torch.cuda.synchronize()
+    train_elapsed = time.perf_counter() - train_start
+    print(f"[PINN] Training complete: {train_elapsed:.2f}s total | {train_elapsed / args.epochs:.3f}s/epoch avg")
 
     # Save history
     with open(out_dir / "pinn_training_history.json", "w") as f:
