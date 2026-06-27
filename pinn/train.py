@@ -22,6 +22,7 @@ Usage:
 import argparse
 import json
 import pickle
+import time
 from pathlib import Path
 
 import jax
@@ -101,6 +102,7 @@ def run_groupkfold(X_raw, y, groups, args):
     n_groups = int(jnp.unique(groups).shape[0])
     print(f"[PINN] GroupKFold: {args.n_folds} folds | {len(y)} samples | {n_groups} paper groups")
     print(f"[PINN] Training {args.epochs} epochs per fold (alpha={args.alpha})\n")
+    gkf_start = time.perf_counter()
 
     # Single optimizer shared across folds; opt_state is reset per fold
     approx_steps = args.epochs * max(1, len(y) // args.batch_size)
@@ -138,6 +140,7 @@ def run_groupkfold(X_raw, y, groups, args):
     fold_metrics = []
 
     for fold, (train_idx, val_idx) in enumerate(gkf.split(X_raw, y, groups)):
+        fold_start = time.perf_counter()
         fold_key = random.PRNGKey(args.seed + fold)
 
         scaler = StandardScaler()
@@ -166,6 +169,8 @@ def run_groupkfold(X_raw, y, groups, args):
                 best_val_mse = val_metrics["val_mse"]
                 best_params = params
 
+        jax.block_until_ready(best_params)
+        fold_elapsed = time.perf_counter() - fold_start
         val_preds = predict(model, best_params, X_val)
         oof_preds = oof_preds.at[val_idx].set(val_preds)
 
@@ -177,6 +182,7 @@ def run_groupkfold(X_raw, y, groups, args):
 
         fold_metrics.append({
             "fold": fold + 1,
+            "fold_time_s": round(fold_elapsed, 2),
             "rmse_pct": round(fold_rmse, 2),
             "r2": round(fold_r2, 3),
             "mae_pct": round(fold_mae, 2),
@@ -192,7 +198,9 @@ def run_groupkfold(X_raw, y, groups, args):
     oof_r2 = float(r2_score(y_pct, oof_pct))
     oof_mae = float(mean_absolute_error(y_pct, oof_pct))
 
+    gkf_elapsed = time.perf_counter() - gkf_start
     print(f"\n  OOF RMSE: {oof_rmse:.2f}% | OOF R2: {oof_r2:.3f} | OOF MAE: {oof_mae:.2f}%")
+    print(f"[PINN] GroupKFold complete: {gkf_elapsed:.2f}s total | {gkf_elapsed / args.n_folds:.2f}s/fold avg")
 
     return {
         "cv_mode": "groupkfold",
@@ -210,6 +218,8 @@ def run_groupkfold(X_raw, y, groups, args):
             "mae_pct": round(oof_mae, 2),
         },
         "fold_metrics": fold_metrics,
+        "training_time_s": round(gkf_elapsed, 2),
+        "time_per_fold_s": round(gkf_elapsed / args.n_folds, 2),
     }
 
 
@@ -217,6 +227,8 @@ def main():
     args = parse_args()
     key = random.PRNGKey(args.seed)
 
+    print(f"[PINN] JAX backend : {jax.default_backend()}")
+    print(f"[PINN] JAX devices : {jax.devices()}")
     print(f"[PINN] Loading data: {args.data}")
 
     if args.cv == "groupkfold":
@@ -291,7 +303,9 @@ def main():
     best_params = params
 
     print(f"[PINN] Training for {args.epochs} epochs (alpha={args.alpha})")
+    train_start = time.perf_counter()
     for epoch in range(1, args.epochs + 1):
+        epoch_start = time.perf_counter()
         key, epoch_key = random.split(key)
         total_loss = total_data = total_phys = 0.0
         n_batches = 0
@@ -306,6 +320,8 @@ def main():
             total_phys += float(lp)
             n_batches += 1
 
+        jax.block_until_ready(params)
+        epoch_elapsed = time.perf_counter() - epoch_start
         val_metrics = eval_epoch(model, params, X_val, y_val)
 
         if val_metrics["val_mse"] < best_val_mse:
@@ -316,6 +332,7 @@ def main():
 
         row = {
             "epoch": epoch,
+            "epoch_time_s": round(epoch_elapsed, 4),
             "loss": total_loss / max(1, n_batches),
             "loss_data": total_data / max(1, n_batches),
             "loss_physics": total_phys / max(1, n_batches),
@@ -326,12 +343,16 @@ def main():
         if epoch % 20 == 0 or epoch == 1:
             print(
                 f"  Epoch {epoch:4d} | "
+                f"time={epoch_elapsed:.3f}s | "
                 f"loss={row['loss']:.4f} "
                 f"(data={row['loss_data']:.4f}, "
                 f"phys={row['loss_physics']:.4f}) | "
                 f"val_mse={val_metrics['val_mse']:.4f} "
                 f"val_mae={val_metrics['val_mae']:.4f}"
             )
+
+    train_elapsed = time.perf_counter() - train_start
+    print(f"[PINN] Training complete: {train_elapsed:.2f}s total | {train_elapsed / args.epochs:.3f}s/epoch avg")
 
     with open(out_dir / "pinn_training_history.json", "w") as f:
         json.dump(history, f, indent=2)
