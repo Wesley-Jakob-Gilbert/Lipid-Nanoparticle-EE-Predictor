@@ -25,6 +25,11 @@ import pickle
 import time
 from pathlib import Path
 
+try:
+    import intel_extension_for_openxla  # registers Intel XPU backend with JAX
+except ImportError:
+    pass
+
 import jax
 import jax.numpy as jnp
 import optax
